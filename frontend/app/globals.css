@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+/* ─── RIDSS Design System ──────────────────────────────────────────────────── */
+/* Dark Engineering Theme                                                        */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+@theme {
+  /* ── Fonts ─────────────────────────────────────────────────────────────── */
+  --font-sans: var(--font-inter), "Inter", system-ui, sans-serif;
+
+  /* ── Brand Colors ───────────────────────────────────────────────────────── */
+  --color-ferrari-red:   #DC143C;
+  --color-amber:         #F59E0B;
+  --color-success-green: #22C55E;
+
+  /* ── Graphite Scale (backgrounds) ──────────────────────────────────────── */
+  --color-graphite:      #0D0D0F;
+  --color-graphite-800:  #141418;
+  --color-graphite-700:  #1A1A20;
+
+  /* ── Slate Surface Scale (cards, panels) ────────────────────────────────── */
+  --color-slate-surface: #1A1D23;
+  --color-slate-900:     #12151A;
+  --color-slate-800:     #1E2128;
+  --color-slate-700:     #272C36;
+  --color-slate-600:     #3A404D;
+  --color-slate-500:     #545B6B;
+  --color-slate-400:     #7B8496;
+  --color-slate-300:     #A8B0BF;
+  --color-slate-200:     #C8CFD9;
+  --color-slate-100:     #E8ECF0;
+}
+
+/* ─── Base Styles ──────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-graphite);
+  color: var(--color-slate-100);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── Focus Styles ─────────────────────────────────────────────────────────── */
+/* Custom focus-visible ring that uses Ferrari Red consistently                  */
+
+:focus-visible {
+  outline: 2px solid var(--color-ferrari-red);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ─── Scrollbar ────────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-graphite-800);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-slate-700);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-slate-600);
+}
+
+/* ─── Selection ────────────────────────────────────────────────────────────── */
+
+::selection {
+  background: oklch(from var(--color-ferrari-red) l c h / 0.3);
+  color: var(--color-slate-100);
+}
