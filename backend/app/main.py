@@ -5,6 +5,7 @@ Middleware order (Starlette applies in reverse registration order):
   1. CORSMiddleware (outermost — handles preflight before CSRF check)
   2. CSRFMiddleware (validates X-CSRF-Token on state-changing requests)
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -17,6 +18,7 @@ from app.core.config import get_settings
 from app.core.csrf import CSRFMiddleware
 from app.core.rbac import rbac_cache
 from app.db.session import AsyncSessionLocal, check_db_connection
+from app.services.telemetry_provider import telemetry_provider
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +43,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 2. Load RBAC Cache in memory
     async with AsyncSessionLocal() as session:
         await rbac_cache.initialize(session)
+
+    # 3. Non-blocking background FastF1 cache warm-up
+    async def _background_fastf1_warmup():
+        try:
+            logger.info("Starting non-blocking background FastF1 cache warm-up...")
+            seasons = telemetry_provider.get_seasons()
+            for s in seasons:
+                await asyncio.to_thread(telemetry_provider.get_event_schedule, s)
+            current_year = seasons[-1] if seasons else 2024
+            await telemetry_provider.get_season_calendar_events(current_year)
+            logger.info("Background FastF1 cache warm-up complete.")
+        except Exception as e:
+            logger.warning("Background FastF1 warm-up notice: %s", e)
+
+    asyncio.create_task(_background_fastf1_warmup())
 
     logger.info("RIDSS Application initialized and ready.")
     yield

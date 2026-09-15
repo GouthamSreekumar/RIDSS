@@ -2,6 +2,8 @@
 Telemetry provider layer for RIDSS.
 Provides abstract interface for telemetry sources and FastF1 implementation.
 """
+import asyncio
+import concurrent.futures
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -23,6 +25,18 @@ from app.schemas.race_engineer import (
     SessionOverview,
     TelemetryPoint,
     WeatherSummary,
+)
+from app.services.cache import (
+    fastf1_cache,
+    TTL_EVENT_SCHEDULE,
+    TTL_COMPLETED_RESULTS,
+    TTL_RECENT_OVERVIEW,
+    TTL_LAP_TELEMETRY,
+    schedule_key,
+    calendar_key,
+    overview_key,
+    telemetry_key,
+    results_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,6 +147,7 @@ class AbstractRaceTelemetryProvider(ABC):
         circuit_name: str,
         session_type: str,
         filter_driver_codes: Optional[List[str]] = None,
+        team_name: Optional[str] = None,
     ) -> SessionOverview:
         """Fetch Tier 1 lap-level overview for session, filtered by driver codes."""
         pass
@@ -159,8 +174,8 @@ class AbstractRaceTelemetryProvider(ABC):
         pass
 
     @abstractmethod
-    def get_season_calendar_events(
-        self, season: int, filter_driver_codes: Optional[List[str]] = None
+    async def get_season_calendar_events(
+        self, season: int, filter_driver_codes: Optional[List[str]] = None, team_name: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Fetch full season calendar events with filtered team driver results."""
         pass
@@ -179,6 +194,11 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
         return list(range(self.MIN_SEASON, current_year + 1))
 
     def get_event_schedule(self, season: int) -> List[Dict[str, Any]]:
+        ckey = schedule_key(season)
+        cached = fastf1_cache.get(ckey)
+        if cached is not None:
+            return cached
+
         try:
             schedule = fastf1.events.get_event_schedule(season)
             events = []
@@ -232,19 +252,69 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
                         "format": _clean_val(row.get("EventFormat")),
                     }
                 )
+
+            if events:
+                fastf1_cache.set(ckey, events, TTL_EVENT_SCHEDULE)
             return events
         except Exception as e:
             logger.error("Error fetching event schedule for season %s: %s", season, e)
             return []
 
-    def get_season_calendar_events(
+    def _fetch_single_race_results(self, season: int, round_number: int) -> List[Dict[str, Any]]:
+        """
+        Fetch results-only for a single round (laps=False, telemetry=False, weather=False).
+        Cached in-memory using results_key.
+        """
+        ckey = results_key(season, round_number)
+        cached = fastf1_cache.get(ckey)
+        if cached is not None:
+            return cached
+
+        driver_results: List[Dict[str, Any]] = []
+        try:
+            session = self._load_session_results_only(season, round_number, "Race")
+            if hasattr(session, "results") and session.results is not None and not session.results.empty:
+                for _, res_row in session.results.iterrows():
+                    d_code = str(_clean_val(res_row.get("Abbreviation") or res_row.get("Driver"), ""))
+                    res_t_name = str(_clean_val(res_row.get("TeamName"), ""))
+
+                    d_num = _clean_val(res_row.get("DriverNumber"), 0)
+                    try:
+                        d_num = int(d_num)
+                    except (ValueError, TypeError):
+                        d_num = 0
+
+                    pos = _clean_val(res_row.get("Position") or res_row.get("ClassifiedPosition"))
+                    pos_text = str(_clean_val(res_row.get("ClassifiedPosition"), "")) if res_row.get("ClassifiedPosition") else (str(int(pos)) if pos is not None else None)
+                    pts = _clean_val(res_row.get("Points"))
+                    stat = _clean_val(res_row.get("Status"))
+
+                    driver_results.append(
+                        {
+                            "driver_code": d_code,
+                            "team_name": res_t_name,
+                            "driver_number": d_num,
+                            "full_name": _clean_val(res_row.get("FullName")),
+                            "position": int(pos) if pos is not None else None,
+                            "position_text": pos_text,
+                            "points": float(pts) if pts is not None else None,
+                            "status": str(stat) if stat is not None else None,
+                        }
+                    )
+            fastf1_cache.set(ckey, driver_results, TTL_COMPLETED_RESULTS)
+        except Exception as e:
+            logger.warning("Could not load race results for round %s season %s: %s", round_number, season, e)
+
+        return driver_results
+
+    async def get_season_calendar_events(
         self, season: int, filter_driver_codes: Optional[List[str]] = None, team_name: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         events = self.get_event_schedule(season)
         now_utc = datetime.now(timezone.utc)
         upper_codes = [c.upper() for c in filter_driver_codes] if filter_driver_codes else []
 
-        calendar_events = []
+        completed_events = []
         for ev in events:
             ev_date_str = ev.get("event_date")
             is_past = False
@@ -259,53 +329,59 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
                 except Exception as e:
                     logger.warning("Could not parse date '%s' for event '%s': %s", ev_date_str, ev.get("event_name"), e)
                     is_past = False
+            ev["_is_completed"] = is_past
+            round_num = ev.get("round_number")
+            if is_past and round_num and int(round_num) > 0:
+                completed_events.append(ev)
 
-            # completed/upcoming status is derived directly from actual date comparison
-            is_completed = is_past
+        # Parallelize fetching of completed round results using thread pool
+        if completed_events:
+            tasks = [
+                asyncio.to_thread(self._fetch_single_race_results, season, int(ev["round_number"]))
+                for ev in completed_events
+            ]
+            fetched_results = await asyncio.gather(*tasks, return_exceptions=True)
+        else:
+            fetched_results = []
+
+        round_results_map: Dict[int, List[Dict[str, Any]]] = {}
+        for ev, res in zip(completed_events, fetched_results):
+            r_num = int(ev["round_number"])
+            if isinstance(res, Exception):
+                logger.warning("Failed fetching results for round %s season %s: %s", r_num, season, res)
+                round_results_map[r_num] = []
+            else:
+                round_results_map[r_num] = res
+
+        calendar_events = []
+        for ev in events:
+            is_completed = ev.get("_is_completed", False)
             driver_results = []
 
             if is_completed:
-                round_num = ev.get("round_number")
-                if round_num and int(round_num) > 0:
-                    try:
-                        session = fastf1.get_session(season, int(round_num), "Race")
-                        session.load(laps=False, telemetry=False, weather=False)
-                        if hasattr(session, "results") and session.results is not None and not session.results.empty:
-                            for _, res_row in session.results.iterrows():
-                                d_code = str(_clean_val(res_row.get("Abbreviation") or res_row.get("Driver"), ""))
-                                res_t_name = str(_clean_val(res_row.get("TeamName"), ""))
+                r_num = int(ev.get("round_number", 0))
+                raw_results = round_results_map.get(r_num, [])
+                for res_item in raw_results:
+                    res_t_name = res_item.get("team_name", "")
+                    d_code = res_item.get("driver_code", "")
 
-                                # Team-name matching takes precedence if provided, falling back to upper_codes
-                                if team_name:
-                                    if not is_same_team(team_name, res_t_name):
-                                        continue
-                                elif upper_codes and d_code.upper() not in upper_codes:
-                                    continue
+                    if team_name:
+                        if not is_same_team(team_name, res_t_name):
+                            continue
+                    elif upper_codes and d_code.upper() not in upper_codes:
+                        continue
 
-                                d_num = _clean_val(res_row.get("DriverNumber"), 0)
-                                try:
-                                    d_num = int(d_num)
-                                except (ValueError, TypeError):
-                                    d_num = 0
-
-                                pos = _clean_val(res_row.get("Position") or res_row.get("ClassifiedPosition"))
-                                pos_text = str(_clean_val(res_row.get("ClassifiedPosition"), "")) if res_row.get("ClassifiedPosition") else (str(int(pos)) if pos is not None else None)
-                                pts = _clean_val(res_row.get("Points"))
-                                stat = _clean_val(res_row.get("Status"))
-
-                                driver_results.append(
-                                    {
-                                        "driver_code": d_code,
-                                        "driver_number": d_num,
-                                        "full_name": _clean_val(res_row.get("FullName")),
-                                        "position": int(pos) if pos is not None else None,
-                                        "position_text": pos_text,
-                                        "points": float(pts) if pts is not None else None,
-                                        "status": str(stat) if stat is not None else None,
-                                    }
-                                )
-                    except Exception as e:
-                        logger.warning("Could not load race results for round %s season %s: %s", round_num, season, e)
+                    driver_results.append(
+                        {
+                            "driver_code": d_code,
+                            "driver_number": res_item["driver_number"],
+                            "full_name": res_item.get("full_name"),
+                            "position": res_item.get("position"),
+                            "position_text": res_item.get("position_text"),
+                            "points": res_item.get("points"),
+                            "status": res_item.get("status"),
+                        }
+                    )
 
             calendar_events.append(
                 {
@@ -314,7 +390,7 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
                     "location": ev["location"],
                     "event_name": ev["event_name"],
                     "official_event_name": ev.get("official_event_name"),
-                    "event_date": ev_date_str,
+                    "event_date": ev.get("event_date"),
                     "format": ev.get("format"),
                     "is_completed": is_completed,
                     "driver_results": driver_results,
@@ -323,11 +399,62 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
 
         return calendar_events
 
-    def _load_fastf1_session(self, season: int, circuit_name: str, session_type: str, telemetry: bool = False):
-        """Helper to get and load a FastF1 session object."""
-        session = fastf1.get_session(season, circuit_name, session_type)
-        session.load(laps=True, telemetry=telemetry, weather=True)
+    # ── Split session loaders for exact required data ─────────────────────────
+
+    def _load_session_results_only(self, season: int, round_num_or_circuit: Any, session_type: str = "Race"):
+        """Minimum loader for results/calendar: laps=False, telemetry=False, weather=False."""
+        session = fastf1.get_session(season, round_num_or_circuit, session_type)
+        session.load(laps=False, telemetry=False, weather=False)
         return session
+
+    def _load_session_overview(self, season: int, circuit_name: str, session_type: str = "Race"):
+        """Overview loader for Tier 1: laps=True, telemetry=False, weather=True."""
+        session = fastf1.get_session(season, circuit_name, session_type)
+        session.load(laps=True, telemetry=False, weather=True)
+        return session
+
+    def _load_session_telemetry(self, season: int, circuit_name: str, session_type: str = "Race"):
+        """Full lap detail loader for Tier 2: laps=True, telemetry=True, weather=False."""
+        session = fastf1.get_session(season, circuit_name, session_type)
+        session.load(laps=True, telemetry=True, weather=False)
+        return session
+
+    def _filter_overview(
+        self, overview: SessionOverview, filter_driver_codes: Optional[List[str]], team_name: Optional[str]
+    ) -> SessionOverview:
+        """Filter cached full SessionOverview by team_name or driver codes."""
+        if not filter_driver_codes and not team_name:
+            return overview
+
+        target_codes = set()
+        if team_name and overview.session_results:
+            for res in overview.session_results:
+                if is_same_team(team_name, res.team_name):
+                    target_codes.add(res.driver_code.upper())
+
+        if not target_codes and filter_driver_codes:
+            target_codes = set(c.upper() for c in filter_driver_codes)
+
+        if not target_codes:
+            return overview
+
+        filtered_results = [
+            r for r in overview.session_results if r.driver_code and r.driver_code.upper() in target_codes
+        ]
+        filtered_laps = {
+            code: laps for code, laps in overview.driver_lap_summaries.items() if code.upper() in target_codes
+        }
+
+        return SessionOverview(
+            session_id=overview.session_id,
+            season=overview.season,
+            circuit_name=overview.circuit_name,
+            session_name=overview.session_name,
+            total_laps=overview.total_laps,
+            weather_summary=overview.weather_summary,
+            session_results=filtered_results,
+            driver_lap_summaries=filtered_laps,
+        )
 
     def get_session_overview(
         self,
@@ -337,44 +464,21 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
         filter_driver_codes: Optional[List[str]] = None,
         team_name: Optional[str] = None,
     ) -> SessionOverview:
+        ckey = overview_key(season, circuit_name, session_type)
+        cached = fastf1_cache.get(ckey)
+        if cached is not None and isinstance(cached, SessionOverview):
+            return self._filter_overview(cached, filter_driver_codes, team_name)
+
         session = None
         laps_df = pd.DataFrame()
         try:
-            session = self._load_fastf1_session(season, circuit_name, session_type, telemetry=False)
+            session = self._load_session_overview(season, circuit_name, session_type)
             if hasattr(session, "laps") and session.laps is not None:
                 laps_df = session.laps
         except Exception as e:
-            logger.warning("Could not load FastF1 session data for %s %s %s: %s", season, circuit_name, session_type, e)
-
-        # ── Dynamic Per-Session Team Driver Resolution ──
-        session_team_driver_codes: List[str] = []
-        if team_name and hasattr(session, "results") and session.results is not None and not session.results.empty:
-            avail_teams = set()
-            for _, res_row in session.results.iterrows():
-                f1_t_name = str(_clean_val(res_row.get("TeamName"), ""))
-                if f1_t_name:
-                    avail_teams.add(f1_t_name)
-                d_code = str(_clean_val(res_row.get("Abbreviation") or res_row.get("Driver"), "")).upper()
-                if is_same_team(team_name, f1_t_name) and d_code:
-                    session_team_driver_codes.append(d_code)
-
-            if not session_team_driver_codes:
-                logger.warning(
-                    "[Team Matching Warning] Configured team_name '%s' did not match any FastF1 team names for %s %s %s. FastF1 session team names available: %s",
-                    team_name, season, circuit_name, session_type, list(avail_teams)
-                )
-
-        target_codes = (
-            session_team_driver_codes
-            if session_team_driver_codes
-            else ([c.upper() for c in filter_driver_codes] if filter_driver_codes else [])
-        )
-
-        if target_codes and not laps_df.empty:
-            laps_df = laps_df[laps_df["Driver"].astype(str).str.upper().isin(target_codes)]
+            logger.warning("Could not load FastF1 session overview for %s %s %s: %s", season, circuit_name, session_type, e)
 
         driver_lap_map: Dict[str, List[LapSummary]] = {}
-
         if not laps_df.empty:
             for _, row in laps_df.iterrows():
                 driver_code = str(row["Driver"])
@@ -415,7 +519,7 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
                 )
                 driver_lap_map[driver_code].append(lap_summary)
 
-        # Process Session Results (grid position, finish position, points, classification status)
+        # Process Session Results
         results_list: List[DriverResult] = []
         if hasattr(session, "results") and session.results is not None and not session.results.empty:
             for _, res_row in session.results.iterrows():
@@ -425,9 +529,6 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
                     d_num = int(d_num)
                 except (ValueError, TypeError):
                     d_num = 0
-
-                if target_codes and d_code and d_code.upper() not in target_codes:
-                    continue
 
                 grid_pos = _clean_val(res_row.get("GridPosition"))
                 pos = _clean_val(res_row.get("Position") or res_row.get("ClassifiedPosition"))
@@ -460,7 +561,7 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
 
         session_id = f"{season}_{circuit_name.lower().replace(' ', '_')}_{session_type.lower()}"
 
-        return SessionOverview(
+        full_overview = SessionOverview(
             session_id=session_id,
             season=season,
             circuit_name=circuit_name,
@@ -471,6 +572,13 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
             driver_lap_summaries=driver_lap_map,
         )
 
+        # Store in cache: TTL depends on historical vs current season
+        current_year = datetime.now(timezone.utc).year
+        ttl = TTL_COMPLETED_RESULTS if season < current_year else TTL_RECENT_OVERVIEW
+        fastf1_cache.set(ckey, full_overview, ttl)
+
+        return self._filter_overview(full_overview, filter_driver_codes, team_name)
+
     def get_lap_telemetry(
         self,
         season: int,
@@ -479,7 +587,12 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
         driver_code: str,
         lap_number: int,
     ) -> LapTelemetry:
-        session = self._load_fastf1_session(season, circuit_name, session_type, telemetry=True)
+        ckey = telemetry_key(season, circuit_name, session_type, driver_code, lap_number)
+        cached = fastf1_cache.get(ckey)
+        if cached is not None and isinstance(cached, LapTelemetry):
+            return cached
+
+        session = self._load_session_telemetry(season, circuit_name, session_type)
         driver_laps = session.laps.pick_drivers(driver_code.upper())
 
         if driver_laps.empty:
@@ -571,7 +684,7 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
         except (ValueError, TypeError):
             driver_num = 0
 
-        return LapTelemetry(
+        lap_tel = LapTelemetry(
             session_id=session_id,
             driver_code=driver_code.upper(),
             driver_number=driver_num,
@@ -585,6 +698,9 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
             driver_color=driver_color,
         )
 
+        fastf1_cache.set(ckey, lap_tel, TTL_LAP_TELEMETRY)
+        return lap_tel
+
     def get_comparison(
         self,
         primary_session: Dict[str, Any],
@@ -592,8 +708,28 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
     ) -> ComparisonData:
         """
         Compare two lap telemetry traces using fastf1.utils.delta_time()
-        and fastf1.plotting colors.
+        and fastf1.plotting colors. Both session loads and telemetry fetches are optimized and cached.
         """
+        p_key = telemetry_key(
+            primary_session["season"],
+            primary_session["circuit_name"],
+            primary_session["session_type"],
+            primary_session["driver_code"],
+            primary_session["lap_number"],
+        )
+        s_key = telemetry_key(
+            secondary_session["season"],
+            secondary_session["circuit_name"],
+            secondary_session["session_type"],
+            secondary_session["driver_code"],
+            secondary_session["lap_number"],
+        )
+        comp_key = f"{p_key}:{s_key}:comparison"
+
+        cached = fastf1_cache.get(comp_key)
+        if cached is not None and isinstance(cached, ComparisonData):
+            return cached
+
         p_tel = self.get_lap_telemetry(
             season=primary_session["season"],
             circuit_name=primary_session["circuit_name"],
@@ -614,22 +750,27 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
         time_delta_list: List[float] = []
 
         try:
-            p_session = self._load_fastf1_session(
-                primary_session["season"],
-                primary_session["circuit_name"],
-                primary_session["session_type"],
-                telemetry=True,
-            )
+            # Parallelize loading of primary and secondary FastF1 sessions for delta_time calculation
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                fut_p = executor.submit(
+                    self._load_session_telemetry,
+                    primary_session["season"],
+                    primary_session["circuit_name"],
+                    primary_session["session_type"],
+                )
+                fut_s = executor.submit(
+                    self._load_session_telemetry,
+                    secondary_session["season"],
+                    secondary_session["circuit_name"],
+                    secondary_session["session_type"],
+                )
+                p_session = fut_p.result()
+                s_session = fut_s.result()
+
             p_laps = p_session.laps.pick_drivers(primary_session["driver_code"].upper())
             p_lap = p_laps[p_laps["LapNumber"] == primary_session["lap_number"]]
             p_lap_row = p_lap.iloc[0] if not p_lap.empty else p_laps.pick_fastest()
 
-            s_session = self._load_fastf1_session(
-                secondary_session["season"],
-                secondary_session["circuit_name"],
-                secondary_session["session_type"],
-                telemetry=True,
-            )
             s_laps = s_session.laps.pick_drivers(secondary_session["driver_code"].upper())
             s_lap = s_laps[s_laps["LapNumber"] == secondary_session["lap_number"]]
             s_lap_row = s_lap.iloc[0] if not s_lap.empty else s_laps.pick_fastest()
@@ -663,7 +804,7 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
         primary_color = p_tel.driver_color
         secondary_color = s_tel.driver_color
 
-        return ComparisonData(
+        comp_data = ComparisonData(
             primary_driver=primary_session["driver_code"],
             primary_lap=primary_session["lap_number"],
             primary_telemetry=p_tel,
@@ -676,6 +817,9 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
             speed_delta=speed_delta_list,
             time_delta_seconds=time_delta_list,
         )
+
+        fastf1_cache.set(comp_key, comp_data, TTL_LAP_TELEMETRY)
+        return comp_data
 
 
 # Global provider instance

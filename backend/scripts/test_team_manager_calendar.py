@@ -35,7 +35,7 @@ async def main():
         logger.info("2023 Team Drivers: %s", driver_codes_2023)
 
         logger.info("=== 4. Testing Completed Race Calendar Fetch (2023 Season) ===")
-        events_2023 = telemetry_provider.get_season_calendar_events(2023, filter_driver_codes=driver_codes_2023)
+        events_2023 = await telemetry_provider.get_season_calendar_events(2023, filter_driver_codes=driver_codes_2023)
         logger.info("Total events in 2023: %s", len(events_2023))
         assert len(events_2023) > 0
 
@@ -50,7 +50,7 @@ async def main():
 
         logger.info("=== 5. Testing Upcoming Race Schedule Fetch (2026 Season) ===")
         driver_codes_2026 = await get_team_driver_codes(db, manager.team_id, 2026)
-        events_2026 = telemetry_provider.get_season_calendar_events(2026, filter_driver_codes=driver_codes_2026)
+        events_2026 = await telemetry_provider.get_season_calendar_events(2026, filter_driver_codes=driver_codes_2026)
         logger.info("Total events in 2026: %s", len(events_2026))
 
         logger.info("=== TEAM MANAGER RACE CALENDAR INTEGRATION TESTS PASSED CLEANLY! ===")

@@ -699,7 +699,7 @@ async def get_team_manager_calendar(
     team_driver_codes = await get_team_driver_codes(db, team_id, target_season)
 
     # Fetch season calendar events from shared telemetry_provider
-    events_raw = telemetry_provider.get_season_calendar_events(target_season, filter_driver_codes=team_driver_codes)
+    events_raw = await telemetry_provider.get_season_calendar_events(target_season, filter_driver_codes=team_driver_codes)
 
     events: List[RaceCalendarEvent] = []
     for ev in events_raw:

@@ -31,7 +31,7 @@ async def main():
         driver_codes_2026 = await get_team_driver_codes(db, manager.team_id, 2026)
 
         logger.info("=== 2. Testing 2026 Race Calendar Fetch & Testing Event Exclusion ===")
-        events_2026 = telemetry_provider.get_season_calendar_events(2026, filter_driver_codes=driver_codes_2026)
+        events_2026 = await telemetry_provider.get_season_calendar_events(2026, filter_driver_codes=driver_codes_2026)
         logger.info("Total 2026 championship events (excluding testing): %s", len(events_2026))
 
         # FIX 2 VERIFICATION: No testing sessions should be in the list
@@ -69,7 +69,7 @@ async def main():
 
         logger.info("=== 3. Testing 2023 Past Season (All Completed) ===")
         driver_codes_2023 = await get_team_driver_codes(db, manager.team_id, 2023)
-        events_2023 = telemetry_provider.get_season_calendar_events(2023, filter_driver_codes=driver_codes_2023)
+        events_2023 = await telemetry_provider.get_season_calendar_events(2023, filter_driver_codes=driver_codes_2023)
         logger.info("Total 2023 events: %s", len(events_2023))
         completed_2023 = [e for e in events_2023 if e["is_completed"]]
         assert len(completed_2023) == len(events_2023), f"All 2023 events should be completed, got {len(completed_2023)} / {len(events_2023)}"
