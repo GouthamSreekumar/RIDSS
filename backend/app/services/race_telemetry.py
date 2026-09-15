@@ -22,27 +22,55 @@ from app.services.telemetry_provider import telemetry_provider
 logger = logging.getLogger(__name__)
 
 
-# Season-specific Red Bull Racing driver roster matrix
-SEASON_TEAM_DRIVER_MAP: Dict[int, List[str]] = {
-    2023: ["VER", "PER"],
-    2024: ["VER", "PER"],
-    2025: ["VER", "LAW", "TSU"],
-    2026: ["VER", "HAD"],
-}
+from app.models.driver import Driver
+from app.models.race_circuit import Circuit
+from app.models.team import Team
+from app.models.user import User
+from app.schemas.race_engineer import (
+    ComparisonData,
+    LapTelemetry,
+    SessionOverview,
+)
+from app.services.telemetry_provider import telemetry_provider
+
+logger = logging.getLogger(__name__)
+
+
+async def get_team_name_by_id(db: AsyncSession, team_id: str) -> Optional[str]:
+    """Helper to fetch team_name for a given team_id."""
+    res = await db.execute(select(Team).where(Team.team_id == team_id))
+    team = res.scalar_one_or_none()
+    return team.team_name if team else None
 
 
 async def get_team_driver_codes(
-    db: AsyncSession, team_id: str, season: Optional[int] = None
+    db: AsyncSession,
+    team_id: str,
+    season: Optional[int] = None,
+    circuit_name: Optional[str] = None,
+    session_type: Optional[str] = None,
 ) -> List[str]:
-    """Helper to resolve FastF1 driver codes for active drivers in a team, scoped by season."""
-    if season and season in SEASON_TEAM_DRIVER_MAP:
-        return SEASON_TEAM_DRIVER_MAP[season]
+    """
+    Resolves FastF1 driver codes dynamically per session based on team_name matching.
+    Falls back to current active team drivers in DB if season/circuit context is omitted.
+    """
+    team_name = await get_team_name_by_id(db, team_id)
+
+    if season and circuit_name and session_type and team_name:
+        overview = telemetry_provider.get_session_overview(
+            season=season,
+            circuit_name=circuit_name,
+            session_type=session_type,
+            team_name=team_name,
+        )
+        if overview.driver_lap_summaries:
+            return list(overview.driver_lap_summaries.keys())
 
     res = await db.execute(
         select(Driver)
         .options(selectinload(Driver.user))
         .join(User)
-        .where(User.team_id == team_id, User.status == "active")
+        .where(User.team_id == team_id, User.status == "active", Driver.is_active == True)
     )
     drivers = res.scalars().all()
     codes = []
@@ -65,18 +93,17 @@ async def get_processed_session_overview(
 ) -> SessionOverview:
     """
     Tier 1 lap-level summary for a session.
-    If team_id is provided, server-side filtering is enforced so only that team's drivers for that season are returned.
-    This function is reusable directly by the Strategy Engineer module.
+    If team_id is provided, server-side filtering is enforced matching FastF1 session results by team_name.
     """
-    filter_codes = None
+    team_name = None
     if team_id:
-        filter_codes = await get_team_driver_codes(db, team_id, season=season)
+        team_name = await get_team_name_by_id(db, team_id)
 
     overview = telemetry_provider.get_session_overview(
         season=season,
         circuit_name=circuit_name,
         session_type=session_type,
-        filter_driver_codes=filter_codes,
+        team_name=team_name,
     )
     return overview
 
@@ -90,7 +117,7 @@ async def get_processed_lap_telemetry(
     lap_number: int,
 ) -> LapTelemetry:
     """
-    Tier 2 full telemetry stream for one lap, enriched with the circuit's GeoJSON track geometry.
+    Tier 2 full telemetry stream for one lap.
     """
     lap_tel = telemetry_provider.get_lap_telemetry(
         season=season,
@@ -99,15 +126,6 @@ async def get_processed_lap_telemetry(
         driver_code=driver_code,
         lap_number=lap_number,
     )
-
-    # Enrich with track_geometry from DB if available
-    res = await db.execute(
-        select(Circuit).where(Circuit.circuit_name.ilike(f"%{circuit_name}%"))
-    )
-    circuit = res.scalars().first()
-    if circuit and circuit.track_geometry:
-        lap_tel.track_geometry = circuit.track_geometry
-
     return lap_tel
 
 

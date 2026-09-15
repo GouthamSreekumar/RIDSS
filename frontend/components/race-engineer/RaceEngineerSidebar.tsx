@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * RaceEngineerSidebar — Fixed left navigation for Race Engineer workspace.
- * Dark Engineering Theme with Electric Cyan & Emerald accents.
+ * RaceEngineerSidebar — Pit-wall navigation sidebar for Race Engineer workspace.
+ * Mid-dark graphite structural chrome frame with recessed near-black nav surfaces.
  */
 import {
   Activity,
@@ -22,9 +22,9 @@ import { useQuery } from "@tanstack/react-query";
 
 const NAV_ITEMS = [
   { href: "/race-engineer", label: "Dashboard", icon: LayoutDashboard, exact: true },
-  { href: "/race-engineer/roster", label: "Team Roster", icon: Users, exact: false },
-  { href: "/race-engineer/telemetry", label: "Telemetry Analysis", icon: Gauge, exact: false },
-  { href: "/race-engineer/reports", label: "Engineering Reports", icon: FileText, exact: false },
+  { href: "/race-engineer/roster", label: "Team roster", icon: Users, exact: false },
+  { href: "/race-engineer/telemetry", label: "Telemetry analysis", icon: Gauge, exact: false },
+  { href: "/race-engineer/reports", label: "Engineering reports", icon: FileText, exact: false },
 ];
 
 export function RaceEngineerSidebar() {
@@ -52,20 +52,20 @@ export function RaceEngineerSidebar() {
     item.exact ? pathname === item.href : pathname.startsWith(item.href);
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-800/80 bg-slate-950">
+    <aside className="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-800 bg-graphite font-sans">
       {/* ── Top branding ── */}
-      <div className="flex items-center gap-3 border-b border-slate-800/80 px-5 py-4">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-500/15 ring-1 ring-cyan-500/30">
-          <Cpu size={18} className="text-cyan-400" />
+      <div className="flex items-center gap-3 border-b border-slate-800 px-5 py-4 bg-slate-900/60">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center border border-cyan-400/40 bg-cyan-400/10 text-cyan-400">
+          <Cpu size={16} />
         </div>
         <div>
-          <p className="text-sm font-bold tracking-tight text-slate-100">RIDSS</p>
-          <p className="text-[10px] text-cyan-400 tracking-widest uppercase font-semibold">Race Engineer</p>
+          <p className="text-sm font-bold tracking-tight text-slate-100 font-mono">RIDSS</p>
+          <p className="text-xs text-cyan-400 font-mono">Race engineering</p>
         </div>
       </div>
 
       {/* ── Navigation Items ── */}
-      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
+      <nav className="flex-1 overflow-y-auto p-3 space-y-1">
         {NAV_ITEMS.map((item) => {
           const active = isActive(item);
           const Icon = item.icon;
@@ -73,41 +73,41 @@ export function RaceEngineerSidebar() {
             <Link
               key={item.href}
               href={item.href}
-              className={`group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all duration-150
-                ${active
-                  ? "bg-cyan-500/10 text-cyan-300 font-medium ring-1 ring-cyan-500/25"
-                  : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
-                }`}
+              className={`group flex items-center gap-3 px-3.5 py-2.5 text-xs transition-colors border-l-2 ${
+                active
+                  ? "border-l-cyan-400 bg-slate-surface text-slate-100 font-semibold border border-slate-800"
+                  : "border-l-transparent text-slate-400 hover:bg-slate-surface/60 hover:text-slate-200"
+              }`}
             >
               <Icon
-                size={16}
-                className={`shrink-0 transition-colors ${active ? "text-cyan-400" : "text-slate-500 group-hover:text-slate-300"}`}
+                size={15}
+                className={`shrink-0 ${active ? "text-cyan-400" : "text-slate-500 group-hover:text-slate-300"}`}
               />
-              <span className="flex-1">{item.label}</span>
-              {active && <ChevronRight size={12} className="text-cyan-400/60" />}
+              <span className="flex-1 font-medium">{item.label}</span>
+              {active && <ChevronRight size={12} className="text-cyan-400 shrink-0" />}
             </Link>
           );
         })}
       </nav>
 
       {/* ── User Profile + Logout ── */}
-      <div className="border-t border-slate-800/80 p-3">
-        <div className="mb-2 rounded-lg bg-slate-900/60 px-3 py-2.5 border border-slate-800/60">
-          <p className="text-xs font-semibold text-slate-200 truncate">{user?.full_name ?? "—"}</p>
-          <p className="text-[11px] text-slate-500 truncate">{user?.email ?? "—"}</p>
-          <span className="mt-1 inline-block rounded-sm bg-cyan-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-cyan-300 ring-1 ring-cyan-500/20">
-            Race Engineer
-          </span>
+      <div className="border-t border-slate-800 p-3 bg-slate-900/60">
+        <div className="mb-2 border border-slate-800 bg-slate-surface p-3 space-y-1">
+          <p className="text-xs font-semibold text-slate-100 truncate">{user?.full_name ?? "—"}</p>
+          <p className="text-[11px] text-slate-400 font-mono truncate">{user?.email ?? "—"}</p>
+          <div className="pt-1">
+            <span className="inline-block border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 text-[10px] font-mono text-cyan-400">
+              Race engineer
+            </span>
+          </div>
         </div>
         <button
           onClick={handleLogout}
           disabled={loggingOut}
-          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-400
-                     transition-all hover:bg-red-500/10 hover:text-red-400
-                     disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex w-full items-center gap-2 border border-slate-800 bg-slate-surface px-3 py-2 text-xs font-medium text-slate-400 hover:border-red-500/40 hover:bg-red-950/30 hover:text-red-400 transition-colors disabled:opacity-50"
         >
-          <LogOut size={14} />
-          {loggingOut ? "Signing out…" : "Sign Out"}
+          <LogOut size={13} />
+          {loggingOut ? "Signing out…" : "Sign out"}
         </button>
       </div>
     </aside>

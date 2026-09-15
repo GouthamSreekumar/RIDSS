@@ -2,7 +2,7 @@
 Driver SQLAlchemy model.
 """
 import uuid
-from sqlalchemy import Column, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
 from app.models.base import Base
@@ -17,5 +17,7 @@ class Driver(Base):
     nationality = Column(String, nullable=True)
     fastf1_driver_number = Column(Integer, nullable=True)
     fastf1_code = Column(String(3), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
 
     user = relationship("User", back_populates="driver_profile")
+

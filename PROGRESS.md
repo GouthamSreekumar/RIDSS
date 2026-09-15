@@ -29,7 +29,13 @@ Last updated: 2026-08-16
 - [x] Audit logging verified visible in Admin's Audit Logs screen (cross-role check)
 - [x] Dashboard "recent activity" reads from shared AuditLog table (not a separate feed)
 - [x] Driver notifications sent on assignment/unassignment
-- [x] Stub dashboard fully replaced
+## Team Manager Module — Race Calendar
+- [x] Shared FastF1 service function(s) for event schedule + filtered results reused/added
+- [x] GET /api/v1/team-manager/calendar API (dynamic season, no hardcoded year)
+- [x] Nationality flag mapping utility (static, frontend)
+- [x] Calendar page: completed vs upcoming status, own-team driver results shown
+- [x] Verified against a real completed race and a real upcoming race
+
 
 ## Notes / Decisions
 - Database connection set up for PostgreSQL database `RIDSS` via `postgresql+asyncpg` for FastAPI async engine and `psycopg2-binary` for Alembic migrations.
@@ -41,10 +47,8 @@ Last updated: 2026-08-16
 - Driver assignment mutations trigger direct user notifications in the shared `Notification` table.
 
 ## Race Engineer Module
-- [x] Circuit table extended (track_geometry)
 - [x] Driver table extended (fastf1_driver_number, fastf1_code)
 - [x] FastF1TelemetryProvider implemented + cache enabled + pre-warm script
-- [x] Track geometry seeded for full current calendar
 - [x] Own-team-driver filtering enforced server-side
 - [x] Tier 1 overview API + page (static, click-to-drill)
 - [x] Tier 2 lap telemetry API + page (track map, synced charts, full playback)
@@ -53,5 +57,9 @@ Last updated: 2026-08-16
 - [x] Audit logging verified visible in Admin's Audit Logs
 - [x] Driver notification on report generation
 - [x] Processed-analysis service layer exposed for Strategy Engineer
-- [x] Provider layer structured for OpenF1 to be added later without rework
+- [x] Circuit.track_geometry column and bacinger seed script removed
+- [x] Track map rebuilt from get_circuit_info() + reference-lap outline (no DRS/speed-trap markers)
+- [x] Tier 1 enriched: session.results header, sector times, Deleted/IsAccurate flags
+- [x] Comparison mode uses fastf1.utils.delta_time() + fastf1.plotting colors
+
 

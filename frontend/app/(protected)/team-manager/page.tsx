@@ -20,11 +20,11 @@ import { useTeamDashboard } from "@/features/team-manager/api/teamManagerApi";
 // ── Motion Variants ────────────────────────────────────────────────────────────
 const containerVariants = {
   hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { staggerChildren: 0.07, delayChildren: 0.05 } },
+  visible: { opacity: 1, transition: { staggerChildren: 0.05 } },
 };
 const itemVariants = {
-  hidden: { opacity: 0, y: 16 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" as const } },
+  hidden: { opacity: 0, y: 8 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.25, ease: "easeOut" as const } },
 };
 
 // ── Subcomponents ──────────────────────────────────────────────────────────────
@@ -32,41 +32,46 @@ function StatCard({
   label,
   value,
   icon: Icon,
-  color,
+  borderAccentClass,
+  iconColorClass,
   subtext,
   badge,
 }: {
   label: string;
   value: number | string;
   icon: React.ElementType;
-  color: string;
+  borderAccentClass: string;
+  iconColorClass: string;
   subtext?: string;
   badge?: { text: string; alert?: boolean };
 }) {
   return (
     <motion.div
       variants={itemVariants}
-      className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-surface p-6 shadow-md"
+      className={`border border-slate-800 bg-slate-surface p-5 border-l-2 ${borderAccentClass}`}
     >
-      <div className={`absolute -top-6 -right-6 h-24 w-24 rounded-full blur-2xl opacity-20 ${color}`} />
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">{label}</p>
-          <p className="mt-2 text-3xl font-bold tabular-nums text-slate-100">{value}</p>
-          {subtext && <p className="mt-1 text-xs text-slate-500">{subtext}</p>}
+          <p className="text-xs font-semibold text-slate-400">{label}</p>
+          <p className="mt-2 text-3xl font-bold font-mono tabular-nums text-slate-100">{value}</p>
+          {subtext && <p className="mt-1 text-xs text-slate-500 font-mono">{subtext}</p>}
           {badge && (
-            <span
-              className={`mt-2 inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-                badge.alert ? "bg-amber/15 text-amber ring-1 ring-amber/30" : "bg-success-green/15 text-success-green ring-1 ring-success-green/30"
-              }`}
-            >
-              {badge.alert ? <AlertTriangle size={10} /> : <CheckCircle2 size={10} />}
-              {badge.text}
-            </span>
+            <div className="mt-2.5">
+              <span
+                className={`inline-flex items-center gap-1 border px-2 py-0.5 text-[10px] font-mono font-bold ${
+                  badge.alert
+                    ? "border-amber/40 bg-amber/10 text-amber"
+                    : "border-emerald-500/40 bg-emerald-950/40 text-emerald-400"
+                }`}
+              >
+                {badge.alert ? <AlertTriangle size={10} /> : <CheckCircle2 size={10} />}
+                {badge.text}
+              </span>
+            </div>
           )}
         </div>
-        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${color} bg-opacity-10 ring-1 ring-current ring-opacity-20`}>
-          <Icon size={20} />
+        <div className={`flex h-9 w-9 shrink-0 items-center justify-center border border-slate-800 bg-slate-900 ${iconColorClass}`}>
+          <Icon size={18} />
         </div>
       </div>
     </motion.div>
@@ -74,9 +79,9 @@ function StatCard({
 }
 
 const ACTION_BADGES: Record<string, { label: string; style: string }> = {
-  assignment_created: { label: "PAIRING CREATED", style: "text-success-green bg-success-green/10 ring-1 ring-success-green/20" },
-  assignment_removed: { label: "PAIRING REMOVED", style: "text-amber bg-amber/10 ring-1 ring-amber/20" },
-  report_generated: { label: "REPORT GENERATED", style: "text-blue-400 bg-blue-400/10 ring-1 ring-blue-400/20" },
+  assignment_created: { label: "Pairing created", style: "border-l-2 border-l-emerald-500 bg-emerald-950/40 text-emerald-400 border border-emerald-900/60" },
+  assignment_removed: { label: "Pairing removed", style: "border-l-2 border-l-amber-500 bg-amber-950/40 text-amber border border-amber-900/60" },
+  report_generated: { label: "Report generated", style: "border-l-2 border-l-cyan-500 bg-cyan-950/40 text-cyan-400 border border-cyan-900/60" },
 };
 
 function formatRelativeTime(dateStr: string) {
@@ -94,16 +99,16 @@ export default function TeamManagerDashboardPage() {
   if (isLoading) {
     return (
       <div className="flex h-64 flex-col items-center justify-center gap-3">
-        <Activity size={28} className="animate-pulse text-ferrari-red" />
-        <p className="text-sm text-slate-500">Loading team operations workspace…</p>
+        <Activity size={24} className="animate-pulse text-ferrari-red" />
+        <p className="text-xs text-slate-500 font-mono">Loading team workspace telemetry…</p>
       </div>
     );
   }
 
   if (isError || !data) {
     return (
-      <div className="flex h-64 flex-col items-center justify-center gap-3 rounded-xl border border-slate-800 bg-slate-surface p-8 text-center">
-        <AlertCircle size={28} className="text-amber" />
+      <div className="flex h-64 flex-col items-center justify-center gap-3 border border-slate-800 bg-slate-surface p-8 text-center border-l-2 border-l-amber">
+        <AlertCircle size={24} className="text-amber" />
         <div>
           <p className="text-sm font-semibold text-slate-200">Unable to load Team Manager Dashboard</p>
           <p className="mt-1 text-xs text-slate-500">Ensure your account is assigned to a valid team in RIDSS.</p>
@@ -115,26 +120,26 @@ export default function TeamManagerDashboardPage() {
   const hasUnpaired = data.unassigned_drivers_count > 0 || data.unassigned_vehicles_count > 0;
 
   return (
-    <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-8">
+    <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
       {/* Header */}
-      <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-800 pb-5">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold text-slate-100">{data.team_name}</h1>
-            <span className="rounded-full bg-amber/10 px-2.5 py-0.5 text-xs font-semibold text-amber ring-1 ring-amber/20">
-              Team Workspace
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-100">{data.team_name}</h1>
+            <span className="border border-amber/30 bg-amber/10 px-2.5 py-0.5 text-xs font-mono text-amber">
+              Team workspace
             </span>
           </div>
-          <p className="mt-1 text-sm text-slate-500">
-            Manage driver-vehicle assignments, roster health, and operational performance reports.
+          <p className="mt-1 text-xs text-slate-400">
+            Driver-vehicle assignments, active telemetry pairings, and operational performance reports.
           </p>
         </div>
         <div className="flex gap-3">
           <Link
             href="/team-manager/roster"
-            className="flex items-center gap-2 rounded-lg bg-ferrari-red px-4 py-2 text-sm font-semibold text-white hover:bg-ferrari-red/90 transition-all shadow-md"
+            className="flex items-center gap-2 border border-ferrari-red bg-ferrari-red px-4 py-2 text-xs font-semibold text-white hover:bg-ferrari-red/90 transition-colors"
           >
-            <UserCheck size={16} /> Manage Roster
+            <UserCheck size={15} /> Manage roster
           </Link>
         </div>
       </motion.div>
@@ -142,71 +147,75 @@ export default function TeamManagerDashboardPage() {
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Team Drivers"
+          label="Team drivers"
           value={data.driver_count}
           icon={Users}
-          color="text-blue-400 bg-blue-400"
-          subtext="Roster count"
+          borderAccentClass="border-l-cyan-500"
+          iconColorClass="text-cyan-400"
+          subtext="Active roster drivers"
         />
         <StatCard
-          label="Garage Vehicles"
+          label="Garage vehicles"
           value={data.vehicle_count}
           icon={Car}
-          color="text-cyan-400 bg-cyan-400"
+          borderAccentClass="border-l-blue-500"
+          iconColorClass="text-blue-400"
           subtext="Available chassis"
         />
         <StatCard
-          label="Active Pairings"
+          label="Active pairings"
           value={data.active_pairings_count}
           icon={UserCheck}
-          color="text-success-green bg-success-green"
+          borderAccentClass="border-l-emerald-500"
+          iconColorClass="text-emerald-400"
           subtext="Driver ↔ Vehicle pairs"
         />
         <StatCard
-          label="Pairing Alerts"
+          label="Pairing alerts"
           value={data.unassigned_drivers_count + data.unassigned_vehicles_count}
           icon={AlertTriangle}
-          color="text-amber bg-amber"
+          borderAccentClass={hasUnpaired ? "border-l-amber" : "border-l-slate-700"}
+          iconColorClass={hasUnpaired ? "text-amber" : "text-slate-400"}
           subtext={`${data.unassigned_drivers_count} driver, ${data.unassigned_vehicles_count} car unassigned`}
-          badge={hasUnpaired ? { text: "Requires Attention", alert: true } : { text: "Fully Paired", alert: false }}
+          badge={hasUnpaired ? { text: "Requires attention", alert: true } : { text: "Fully paired", alert: false }}
         />
       </div>
 
       {/* Main Grid: Activity Feed & Quick Actions */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Activity Feed (2 cols) */}
-        <motion.div variants={itemVariants} className="lg:col-span-2 rounded-xl border border-slate-800 bg-slate-surface p-6 shadow-md">
-          <div className="mb-4 flex items-center justify-between">
+        <motion.div variants={itemVariants} className="lg:col-span-2 border border-slate-800 bg-slate-surface p-5">
+          <div className="mb-4 flex items-center justify-between border-b border-slate-800/80 pb-3">
             <div className="flex items-center gap-2">
               <TrendingUp size={16} className="text-ferrari-red" />
-              <h2 className="text-sm font-semibold uppercase tracking-widest text-slate-400">
-                Team Activity Feed
+              <h2 className="text-sm font-bold text-slate-200">
+                Team activity feed
               </h2>
             </div>
-            <span className="text-[11px] text-slate-500">Live Audit Log</span>
+            <span className="text-xs text-slate-500 font-mono">Live audit log</span>
           </div>
 
           {data.recent_activity.length === 0 ? (
-            <div className="flex h-48 flex-col items-center justify-center gap-2 text-slate-600">
-              <Clock size={24} />
-              <p className="text-sm">No recent team activity recorded yet.</p>
+            <div className="flex h-44 flex-col items-center justify-center gap-2 text-slate-500">
+              <Clock size={22} />
+              <p className="text-xs font-mono">No recent team activity recorded yet.</p>
             </div>
           ) : (
-            <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
+            <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
               {data.recent_activity.map((log) => {
                 const badgeInfo = ACTION_BADGES[log.action] ?? {
-                  label: log.action.replace(/_/g, " ").toUpperCase(),
-                  style: "text-slate-400 bg-slate-400/10 ring-1 ring-slate-700",
+                  label: log.action.replace(/_/g, " "),
+                  style: "border-l-2 border-l-slate-600 bg-slate-800/60 text-slate-400 border border-slate-700",
                 };
                 return (
-                  <div key={log.log_id} className="flex items-start justify-between rounded-lg bg-graphite-800 p-3.5 border border-slate-800/80">
+                  <div key={log.log_id} className="flex items-start justify-between border border-slate-800 bg-slate-900/60 p-3">
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
-                        <span className={`rounded px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${badgeInfo.style}`}>
+                        <span className={`px-2 py-0.5 text-[10px] font-mono font-bold ${badgeInfo.style}`}>
                           {badgeInfo.label}
                         </span>
-                        <span className="text-xs font-medium text-slate-300">
-                          {log.user_name ?? "Team User"}
+                        <span className="text-xs font-semibold text-slate-300">
+                          {log.user_name ?? "Team user"}
                         </span>
                       </div>
                       <p className="text-xs text-slate-400">
@@ -219,7 +228,7 @@ export default function TeamManagerDashboardPage() {
                           : `Action on ${log.entity_type}`}
                       </p>
                     </div>
-                    <span className="text-[11px] text-slate-500 whitespace-nowrap">
+                    <span className="text-[11px] font-mono text-slate-500 whitespace-nowrap">
                       {formatRelativeTime(log.created_at)}
                     </span>
                   </div>
@@ -230,70 +239,70 @@ export default function TeamManagerDashboardPage() {
         </motion.div>
 
         {/* Quick Navigation & Status Sidepanel (1 col) */}
-        <motion.div variants={itemVariants} className="space-y-6">
-          <div className="rounded-xl border border-slate-800 bg-slate-surface p-6 shadow-md space-y-4">
-            <div className="flex items-center gap-2">
+        <motion.div variants={itemVariants} className="space-y-5">
+          <div className="border border-slate-800 bg-slate-surface p-5 space-y-3">
+            <div className="flex items-center gap-2 border-b border-slate-800/80 pb-2.5">
               <Shield size={16} className="text-amber" />
-              <h2 className="text-sm font-semibold uppercase tracking-widest text-slate-400">Quick Actions</h2>
+              <h2 className="text-sm font-bold text-slate-200">Quick actions</h2>
             </div>
 
             <Link
               href="/team-manager/roster"
-              className="flex items-center justify-between rounded-lg border border-slate-800 bg-graphite-800 p-4 transition-all hover:border-amber/40 hover:bg-slate-800/60 group"
+              className="flex items-center justify-between border border-slate-800 bg-slate-900/80 p-3.5 border-l-2 border-l-amber hover:border-l-ferrari-red transition-colors group"
             >
               <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber/10 text-amber ring-1 ring-amber/20">
-                  <UserCheck size={18} />
+                <div className="flex h-8 w-8 items-center justify-center border border-amber/30 bg-amber/10 text-amber shrink-0">
+                  <UserCheck size={16} />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-slate-100 group-hover:text-amber transition-colors">
-                    Roster & Pairings
+                  <p className="text-xs font-bold text-slate-100 group-hover:text-amber transition-colors">
+                    Roster & pairings
                   </p>
-                  <p className="text-xs text-slate-500">Pair drivers with garage cars</p>
+                  <p className="text-[11px] text-slate-500">Pair drivers with garage cars</p>
                 </div>
               </div>
             </Link>
 
             <Link
               href="/team-manager/reports"
-              className="flex items-center justify-between rounded-lg border border-slate-800 bg-graphite-800 p-4 transition-all hover:border-blue-400/40 hover:bg-slate-800/60 group"
+              className="flex items-center justify-between border border-slate-800 bg-slate-900/80 p-3.5 border-l-2 border-l-cyan-500 hover:border-l-ferrari-red transition-colors group"
             >
               <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-400/10 text-blue-400 ring-1 ring-blue-400/20">
-                  <FileText size={18} />
+                <div className="flex h-8 w-8 items-center justify-center border border-cyan-500/30 bg-cyan-500/10 text-cyan-400 shrink-0">
+                  <FileText size={16} />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-slate-100 group-hover:text-blue-400 transition-colors">
-                    Team Reports
+                  <p className="text-xs font-bold text-slate-100 group-hover:text-cyan-400 transition-colors">
+                    Team reports
                   </p>
-                  <p className="text-xs text-slate-500">Generate & view performance snapshots</p>
+                  <p className="text-[11px] text-slate-500">Generate operational snapshots</p>
                 </div>
               </div>
             </Link>
           </div>
 
-          <div className="rounded-xl border border-slate-800 bg-slate-surface p-6 shadow-md">
-            <h3 className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-3">
-              Roster Status Summary
+          <div className="border border-slate-800 bg-slate-surface p-5">
+            <h3 className="text-xs font-bold text-slate-300 border-b border-slate-800/80 pb-2 mb-3">
+              Roster status summary
             </h3>
             <div className="space-y-2 text-xs text-slate-400">
-              <div className="flex justify-between py-1.5 border-b border-slate-800/60">
-                <span>Total Drivers</span>
-                <span className="font-semibold text-slate-200">{data.driver_count}</span>
+              <div className="flex justify-between py-1 border-b border-slate-800/60">
+                <span>Total drivers</span>
+                <span className="font-mono font-bold text-slate-200">{data.driver_count}</span>
               </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-800/60">
-                <span>Total Vehicles</span>
-                <span className="font-semibold text-slate-200">{data.vehicle_count}</span>
+              <div className="flex justify-between py-1 border-b border-slate-800/60">
+                <span>Total vehicles</span>
+                <span className="font-mono font-bold text-slate-200">{data.vehicle_count}</span>
               </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-800/60">
-                <span>Unassigned Drivers</span>
-                <span className={`font-semibold ${data.unassigned_drivers_count > 0 ? "text-amber" : "text-success-green"}`}>
+              <div className="flex justify-between py-1 border-b border-slate-800/60">
+                <span>Unassigned drivers</span>
+                <span className={`font-mono font-bold ${data.unassigned_drivers_count > 0 ? "text-amber" : "text-emerald-400"}`}>
                   {data.unassigned_drivers_count}
                 </span>
               </div>
-              <div className="flex justify-between py-1.5">
-                <span>Unassigned Vehicles</span>
-                <span className={`font-semibold ${data.unassigned_vehicles_count > 0 ? "text-amber" : "text-success-green"}`}>
+              <div className="flex justify-between py-1">
+                <span>Unassigned vehicles</span>
+                <span className={`font-mono font-bold ${data.unassigned_vehicles_count > 0 ? "text-amber" : "text-emerald-400"}`}>
                   {data.unassigned_vehicles_count}
                 </span>
               </div>

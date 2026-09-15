@@ -24,19 +24,25 @@ from app.models.user import User
 from app.models.vehicle import Vehicle
 from app.schemas.team_manager import (
     AssignmentCreate,
+    CalendarDriverResult,
     DriverSummary,
     DriverVehicleAssignmentResponse,
+    RaceCalendarEvent,
     RecentActivityItem,
     TeamDashboardSummary,
     TeamDriverItem,
+    TeamManagerCalendarResponse,
     TeamReportResponse,
     TeamVehicleItem,
     VehicleSummary,
 )
 from app.services.audit import log_audit_event
+from app.services.race_telemetry import get_team_driver_codes
+from app.services.telemetry_provider import telemetry_provider
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/team-manager", tags=["team-manager"])
+
 
 
 def _ensure_manager_team(user: User) -> str:
@@ -144,18 +150,24 @@ async def get_team_dashboard(
 # ── 2. Team Drivers Endpoint ──────────────────────────────────────────────────
 @router.get("/drivers", response_model=List[TeamDriverItem])
 async def get_team_drivers(
+    include_departed: bool = Query(False, description="Include departed / inactive team drivers"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("teams:read")),
 ) -> List[TeamDriverItem]:
     team_id = _ensure_manager_team(current_user)
 
-    # Query Drivers belonging to this manager's team (active users only)
-    result = await db.execute(
+    # Query Drivers belonging to this manager's team
+    query = (
         select(Driver)
         .options(selectinload(Driver.user))
         .join(User)
-        .where(User.team_id == team_id, User.status == "active")
+        .where(User.team_id == team_id)
     )
+
+    if not include_departed:
+        query = query.where(User.status == "active", Driver.is_active == True)
+
+    result = await db.execute(query)
 
     drivers = result.scalars().all()
 
@@ -271,17 +283,17 @@ async def assign_driver_to_vehicle(
 ) -> DriverVehicleAssignmentResponse:
     team_id = _ensure_manager_team(current_user)
 
-    # 1. Validate Driver belongs to this manager's team
+    # 1. Validate Driver belongs to this manager's team and is currently active
     driver_res = await db.execute(
         select(Driver)
         .options(selectinload(Driver.user))
         .where(Driver.driver_id == payload.driver_id)
     )
     driver = driver_res.scalar_one_or_none()
-    if not driver or not driver.user or driver.user.team_id != team_id or driver.user.status != "active":
+    if not driver or not driver.user or driver.user.team_id != team_id or driver.user.status != "active" or not driver.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Driver does not exist, is disabled, or does not belong to your team.",
+            detail="Driver does not exist, is inactive/departed, or does not belong to your team.",
         )
 
     # 2. Validate Vehicle belongs to this manager's team
@@ -660,3 +672,68 @@ async def get_team_reports(
         )
         for r in reports
     ]
+
+
+# ── 9. Team Manager Race Calendar Endpoint ──────────────────────────────────────
+@router.get("/calendar", response_model=TeamManagerCalendarResponse)
+async def get_team_manager_calendar(
+    season: Optional[int] = Query(None, description="Season year (defaults to current dynamic season)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("teams:read")),
+) -> TeamManagerCalendarResponse:
+    team_id = _ensure_manager_team(current_user)
+
+    # Fetch Team Name
+    team_res = await db.execute(select(Team).where(Team.team_id == team_id))
+    team = team_res.scalar_one_or_none()
+    team_name = team.team_name if team else "My Team"
+
+    # Get dynamic available seasons
+    available_seasons = telemetry_provider.get_seasons()
+
+    target_season = season
+    if not target_season or target_season not in available_seasons:
+        target_season = available_seasons[-1] if available_seasons else datetime.now(timezone.utc).year
+
+    # Resolve team's driver fastf1 codes for target season
+    team_driver_codes = await get_team_driver_codes(db, team_id, target_season)
+
+    # Fetch season calendar events from shared telemetry_provider
+    events_raw = telemetry_provider.get_season_calendar_events(target_season, filter_driver_codes=team_driver_codes)
+
+    events: List[RaceCalendarEvent] = []
+    for ev in events_raw:
+        driver_results = [
+            CalendarDriverResult(
+                driver_code=res["driver_code"],
+                driver_number=res["driver_number"],
+                full_name=res.get("full_name"),
+                position=res.get("position"),
+                position_text=res.get("position_text"),
+                points=res.get("points"),
+                status=res.get("status"),
+            )
+            for res in ev.get("driver_results", [])
+        ]
+
+        events.append(
+            RaceCalendarEvent(
+                round_number=ev["round_number"],
+                country=ev["country"],
+                location=ev["location"],
+                event_name=ev["event_name"],
+                official_event_name=ev.get("official_event_name"),
+                event_date=ev.get("event_date"),
+                format=ev.get("format"),
+                is_completed=ev["is_completed"],
+                driver_results=driver_results,
+            )
+        )
+
+    return TeamManagerCalendarResponse(
+        season=target_season,
+        available_seasons=available_seasons,
+        team_name=team_name,
+        events=events,
+    )
+

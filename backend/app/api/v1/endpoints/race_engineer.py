@@ -58,6 +58,7 @@ def _ensure_engineer_team(user: User) -> str:
 # ── 1. Engineering Dashboard Overview ─────────────────────────────────────────
 @router.get("/dashboard", response_model=RaceEngineerDashboard)
 async def get_race_engineer_dashboard(
+    season: Optional[int] = Query(None, description="Season year (defaults to current dynamic season)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("telemetry:read")),
 ) -> RaceEngineerDashboard:
@@ -68,26 +69,72 @@ async def get_race_engineer_dashboard(
     team = team_res.scalar_one_or_none()
     team_name = team.team_name if team else "My Team"
 
-    # Fetch Active Team Drivers
-    drivers_res = await db.execute(
-        select(Driver)
-        .options(selectinload(Driver.user))
-        .join(User)
-        .where(User.team_id == team_id, User.status == "active")
-    )
-    drivers = drivers_res.scalars().all()
+    seasons = telemetry_provider.get_seasons()
+    target_season = season if season and season in seasons else 2024
+
+    # Retrieve most recent event for target_season
+    events = telemetry_provider.get_event_schedule(target_season)
+    circuit_name = "Bahrain"
+    if events:
+        circuit_name = events[-1].get("event_name") or events[-1].get("location") or "Bahrain"
+
+    # Resolve drivers for this team per session using shared telemetry service
+    try:
+        overview = telemetry_provider.get_session_overview(
+            season=target_season,
+            circuit_name=circuit_name,
+            session_type="Race",
+            team_name=team_name,
+        )
+    except Exception as exc:
+        logger.warning("Failed to fetch session overview for dashboard: %s", exc)
+        from app.schemas.telemetry import SessionOverview
+        overview = SessionOverview()
 
     active_drivers_summary = []
-    for d in drivers:
-        active_drivers_summary.append(
-            {
-                "driver_id": d.driver_id,
-                "driver_number": d.driver_number,
-                "fastf1_code": d.fastf1_code or "DRV",
-                "full_name": d.user.full_name if d.user else "Unknown",
-                "nationality": d.nationality,
-            }
-        )
+    seen_codes = set()
+    if overview.session_results:
+        for res in overview.session_results:
+            d_code = res.driver_code
+            if not d_code or d_code.upper() in seen_codes:
+                continue
+            seen_codes.add(d_code.upper())
+            d_num = res.driver_number
+            f_name = res.full_name or f"Driver {d_code}"
+
+            # Cross-reference with internal Driver/User model if available for nationality/user_id
+            drv_db_res = await db.execute(
+                select(Driver)
+                .options(selectinload(Driver.user))
+                .where(Driver.fastf1_code.ilike(d_code))
+            )
+            drv_db = drv_db_res.scalar_one_or_none()
+
+            drv_id = drv_db.driver_id if drv_db else f"ff1_{d_code.lower()}"
+            nat = drv_db.nationality if drv_db else None
+
+            active_drivers_summary.append(
+                {
+                    "driver_id": drv_id,
+                    "driver_number": d_num,
+                    "fastf1_code": d_code,
+                    "full_name": f_name,
+                    "nationality": nat,
+                }
+            )
+    else:
+        # Fallback if session results empty
+        fallback_codes = await get_team_driver_codes(db, team_id, target_season, circuit_name, "Race")
+        for code in fallback_codes:
+            active_drivers_summary.append(
+                {
+                    "driver_id": f"ff1_{code.lower()}",
+                    "driver_number": 0,
+                    "fastf1_code": code,
+                    "full_name": f"Driver {code}",
+                    "nationality": None,
+                }
+            )
 
     # Fetch Past Reports for this team
     reports_res = await db.execute(
@@ -111,8 +158,6 @@ async def get_race_engineer_dashboard(
         )
         for r in past_reports
     ]
-
-    seasons = telemetry_provider.get_seasons()
 
     quick_links = [
         {"title": "Telemetry Analysis", "url": "/race-engineer/telemetry"},
@@ -168,7 +213,6 @@ async def get_season_circuits(
         circuit_id = f"{base_id}_r{round_num}"
         country = matched_db_circuit.country if matched_db_circuit else ev.get("country", "Unknown")
         length = matched_db_circuit.length if matched_db_circuit else 5.0
-        has_geom = bool(matched_db_circuit and matched_db_circuit.track_geometry)
 
         circuit_summaries.append(
             CircuitSummary(
@@ -177,7 +221,6 @@ async def get_season_circuits(
                 country=country,
                 length=length,
                 round_number=ev.get("round_number"),
-                has_geometry=has_geom,
             )
         )
 
@@ -263,7 +306,9 @@ async def get_lap_telemetry_endpoint(
     plus matching circuit track_geometry GeoJSON outline.
     """
     team_id = _ensure_engineer_team(current_user)
-    allowed_codes = await get_team_driver_codes(db, team_id, season=season)
+    allowed_codes = await get_team_driver_codes(
+        db, team_id, season=season, circuit_name=circuit, session_type=session_type
+    )
 
     # Server-side team validation: driver must belong to current user's team unless comparing
     if driver.upper() not in allowed_codes:

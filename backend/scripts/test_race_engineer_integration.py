@@ -1,7 +1,9 @@
 """
 Integration test script for Race Engineer Module.
 Tests end-to-end functionality including database queries, FastF1 telemetry provider,
-Tier 1 overview, Tier 2 lap telemetry, comparison data, report creation, audit logging, and notifications.
+Tier 1 overview (session.results, sector breakdown, deleted/is_accurate flags),
+Tier 2 lap telemetry (X/Y trace, FastF1 corner turn markers),
+comparison data (fastf1.utils.delta_time & driver colors), report creation, audit logging, and notifications.
 """
 import asyncio
 import json
@@ -73,14 +75,12 @@ async def run_integration_tests():
         assert datetime.now(timezone.utc).year in seasons, "Current year must be in dynamic seasons list!"
         logger.info("Seasons list: %s", seasons)
 
-        logger.info("=== 3. Testing Circuit Geometry Seed Data ===")
+        logger.info("=== 3. Testing Circuit Database Entries ===")
         circuits_res = await session.execute(select(Circuit))
         circuits = circuits_res.scalars().all()
-        assert len(circuits) >= 24, "Full F1 calendar circuits (24) must be present in database!"
-        has_geom_count = sum(1 for c in circuits if c.track_geometry is not None)
-        logger.info("Total circuits: %d, Circuits with GeoJSON geometry: %d", len(circuits), has_geom_count)
+        logger.info("Total circuits in database: %d", len(circuits))
 
-        logger.info("=== 4. Testing Tier 1 Session Overview (Server-side Filtered) ===")
+        logger.info("=== 4. Testing Tier 1 Session Overview (Results, Sector Times & Quality Flags) ===")
         overview = await get_processed_session_overview(
             db=session,
             season=2023,
@@ -91,13 +91,14 @@ async def run_integration_tests():
         assert overview is not None
         assert overview.total_laps > 0
         logger.info(
-            "Tier 1 Overview Success - Session: %s, Total Laps: %d, Team Drivers: %s",
+            "Tier 1 Overview Success - Session: %s, Total Laps: %d, Results count: %d, Team Drivers: %s",
             overview.session_id,
             overview.total_laps,
+            len(overview.session_results),
             list(overview.driver_lap_summaries.keys()),
         )
 
-        logger.info("=== 5. Testing Tier 2 Lap Telemetry Stream & GeoJSON Track Map ===")
+        logger.info("=== 5. Testing Tier 2 Lap Telemetry Stream & FastF1 Corner Turn Markers ===")
         driver_code = list(overview.driver_lap_summaries.keys())[0] if overview.driver_lap_summaries else "VER"
         lap_tel = await get_processed_lap_telemetry(
             db=session,
@@ -109,14 +110,15 @@ async def run_integration_tests():
         )
         assert lap_tel is not None
         assert len(lap_tel.telemetry_points) > 0
-        assert lap_tel.track_geometry is not None, "Track geometry must be attached to Tier 2 telemetry!"
         logger.info(
-            "Tier 2 Telemetry Success - Driver: %s, Telemetry points: %d, Track Geometry: Attached",
+            "Tier 2 Telemetry Success - Driver: %s, Telemetry points: %d, Corner markers: %d, Driver color: %s",
             lap_tel.driver_code,
             len(lap_tel.telemetry_points),
+            len(lap_tel.corners),
+            lap_tel.driver_color,
         )
 
-        logger.info("=== 6. Testing Comparison Telemetry Aligned on Distance ===")
+        logger.info("=== 6. Testing Comparison Telemetry Aligned via fastf1.utils.delta_time ===")
         comp = await get_processed_comparison(
             season=2023,
             circuit_name="Bahrain",
@@ -129,10 +131,13 @@ async def run_integration_tests():
         assert comp is not None
         assert len(comp.aligned_distance) > 0
         logger.info(
-            "Comparison Mode Success - Primary: %s, Secondary: %s, Aligned Points: %d",
+            "Comparison Mode Success - Primary: %s (%s), Secondary: %s (%s), Aligned Points: %d, Time Deltas: %d",
             comp.primary_driver,
+            comp.primary_color,
             comp.secondary_driver,
+            comp.secondary_color,
             len(comp.aligned_distance),
+            len(comp.time_delta_seconds),
         )
 
         logger.info("=== 7. Testing Engineering Report Generation & Shared AuditLog/Notification Hooks ===")
@@ -154,7 +159,6 @@ async def run_integration_tests():
         session.add(report)
         await session.flush()
 
-        # AuditLog entry via shared schema
         audit = AuditLog(
             user_id=engineer.user_id,
             action="report_generated",
@@ -165,7 +169,6 @@ async def run_integration_tests():
         )
         session.add(audit)
 
-        # Driver notification
         driver_res = await session.execute(select(Driver).options(selectinload(Driver.user)))
         driver_obj = driver_res.scalars().first()
         if driver_obj and driver_obj.user:

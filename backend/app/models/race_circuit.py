@@ -16,7 +16,6 @@ class Circuit(Base):
     circuit_name = Column(String, nullable=False, index=True)
     country = Column(String, nullable=False)
     length = Column(Float, nullable=False)  # in kilometers
-    track_geometry = Column(JSON, nullable=True)  # GeoJSON layout outline
 
     races = relationship("Race", back_populates="circuit")
 

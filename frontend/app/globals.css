@@ -11,24 +11,24 @@
   /* ── Brand Colors ───────────────────────────────────────────────────────── */
   --color-ferrari-red:   #DC143C;
   --color-amber:         #F59E0B;
-  --color-success-green: #22C55E;
+  --color-success-green: #10B981;
 
-  /* ── Graphite Scale (backgrounds) ──────────────────────────────────────── */
-  --color-graphite:      #0D0D0F;
-  --color-graphite-800:  #141418;
-  --color-graphite-700:  #1A1A20;
+  /* ── Mid-Dark Graphite Frame (page background & structural chrome) ──────── */
+  --color-graphite:      #16191E;
+  --color-graphite-800:  #1B1E25;
+  --color-graphite-700:  #222630;
 
-  /* ── Slate Surface Scale (cards, panels) ────────────────────────────────── */
-  --color-slate-surface: #1A1D23;
-  --color-slate-900:     #12151A;
-  --color-slate-800:     #1E2128;
-  --color-slate-700:     #272C36;
-  --color-slate-600:     #3A404D;
-  --color-slate-500:     #545B6B;
-  --color-slate-400:     #7B8496;
-  --color-slate-300:     #A8B0BF;
-  --color-slate-200:     #C8CFD9;
-  --color-slate-100:     #E8ECF0;
+  /* ── Recessed Dark Screen Scale (near-black cards, panels, wells) ───────── */
+  --color-slate-surface: #0A0B0D;
+  --color-slate-900:     #050608;
+  --color-slate-800:     #242834;
+  --color-slate-700:     #323848;
+  --color-slate-600:     #485166;
+  --color-slate-500:     #66738A;
+  --color-slate-400:     #8F9CB2;
+  --color-slate-300:     #BAC4D4;
+  --color-slate-200:     #DCE2ED;
+  --color-slate-100:     #F2F5FA;
 }
 
 /* ─── Base Styles ──────────────────────────────────────────────────────────── */
@@ -51,27 +51,45 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ─── Pit-Wall Design System Utilities ──────────────────────────────────────── */
+
+.pit-panel {
+  background-color: var(--color-slate-surface);
+  border: 1px solid var(--color-slate-800);
+  border-radius: 0px;
+}
+
+.sharp-tag {
+  border-radius: 0px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 /* ─── Focus Styles ─────────────────────────────────────────────────────────── */
-/* Custom focus-visible ring that uses Ferrari Red consistently                  */
 
 :focus-visible {
   outline: 2px solid var(--color-ferrari-red);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 0px;
 }
 
 /* ─── Scrollbar ────────────────────────────────────────────────────────────── */
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
   background: var(--color-graphite-800);
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-slate-700);
-  border-radius: 3px;
+  border-radius: 0px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-slate-600);

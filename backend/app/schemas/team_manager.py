@@ -102,3 +102,33 @@ class TeamReportResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class CalendarDriverResult(BaseModel):
+    driver_code: str
+    driver_number: int
+    full_name: Optional[str] = None
+    position: Optional[int] = None
+    position_text: Optional[str] = None
+    points: Optional[float] = None
+    status: Optional[str] = None
+
+
+class RaceCalendarEvent(BaseModel):
+    round_number: int
+    country: str
+    location: str
+    event_name: str
+    official_event_name: Optional[str] = None
+    event_date: Optional[str] = None
+    format: Optional[str] = None
+    is_completed: bool
+    driver_results: List[CalendarDriverResult] = []
+
+
+class TeamManagerCalendarResponse(BaseModel):
+    season: int
+    available_seasons: List[int]
+    team_name: str
+    events: List[RaceCalendarEvent] = []
+

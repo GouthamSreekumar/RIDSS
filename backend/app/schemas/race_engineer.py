@@ -16,7 +16,6 @@ class CircuitSummary(BaseModel):
     country: str
     length: float
     round_number: Optional[int] = None
-    has_geometry: bool = False
 
 
 class SessionInfo(BaseModel):
@@ -24,6 +23,24 @@ class SessionInfo(BaseModel):
     session_name: str
     session_type: str
     date: Optional[str] = None
+
+
+class DriverResult(BaseModel):
+    driver_code: str
+    driver_number: int
+    full_name: Optional[str] = None
+    team_name: Optional[str] = None
+    grid_position: Optional[int] = None
+    position: Optional[int] = None
+    points: Optional[float] = None
+    status: Optional[str] = None
+
+
+class CornerMarker(BaseModel):
+    number: int
+    letter: str
+    x: float
+    y: float
 
 
 class LapSummary(BaseModel):
@@ -42,6 +59,9 @@ class LapSummary(BaseModel):
     pit_out_time_str: Optional[str] = None
     track_status: Optional[str] = None
     is_personal_best: bool = False
+    deleted: bool = False
+    deleted_reason: Optional[str] = None
+    is_accurate: bool = True
     speed_st: Optional[float] = None
     speed_fl: Optional[float] = None
     speed_i1: Optional[float] = None
@@ -67,8 +87,12 @@ class LapTelemetry(BaseModel):
     driver_number: int
     lap_number: int
     lap_time_seconds: Optional[float] = None
+    sector_1_seconds: Optional[float] = None
+    sector_2_seconds: Optional[float] = None
+    sector_3_seconds: Optional[float] = None
     telemetry_points: List[TelemetryPoint] = Field(default_factory=list)
-    track_geometry: Optional[Dict[str, Any]] = None
+    corners: List[CornerMarker] = Field(default_factory=list)
+    driver_color: Optional[str] = None
 
 
 class WeatherSummary(BaseModel):
@@ -85,6 +109,7 @@ class SessionOverview(BaseModel):
     session_name: str
     total_laps: int
     weather_summary: Optional[WeatherSummary] = None
+    session_results: List[DriverResult] = Field(default_factory=list)
     driver_lap_summaries: Dict[str, List[LapSummary]] = Field(default_factory=dict)
 
 
@@ -92,9 +117,11 @@ class ComparisonData(BaseModel):
     primary_driver: str
     primary_lap: int
     primary_telemetry: LapTelemetry
+    primary_color: Optional[str] = None
     secondary_driver: str
     secondary_lap: int
     secondary_telemetry: LapTelemetry
+    secondary_color: Optional[str] = None
     aligned_distance: List[float] = Field(default_factory=list)
     speed_delta: List[float] = Field(default_factory=list)
     time_delta_seconds: List[float] = Field(default_factory=list)
