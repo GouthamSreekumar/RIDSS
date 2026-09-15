@@ -63,8 +63,14 @@ async def get_team_driver_codes(
             session_type=session_type,
             team_name=team_name,
         )
-        if overview.driver_lap_summaries:
-            return list(overview.driver_lap_summaries.keys())
+        session_codes = []
+        if overview.session_results:
+            session_codes = [res.driver_code.upper() for res in overview.session_results if res.driver_code]
+        elif overview.driver_lap_summaries:
+            session_codes = [k.upper() for k in overview.driver_lap_summaries.keys()]
+
+        if session_codes:
+            return session_codes
 
     res = await db.execute(
         select(Driver)

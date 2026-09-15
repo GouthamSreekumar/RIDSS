@@ -695,11 +695,8 @@ async def get_team_manager_calendar(
     if not target_season or target_season not in available_seasons:
         target_season = available_seasons[-1] if available_seasons else datetime.now(timezone.utc).year
 
-    # Resolve team's driver fastf1 codes for target season
-    team_driver_codes = await get_team_driver_codes(db, team_id, target_season)
-
-    # Fetch season calendar events from shared telemetry_provider
-    events_raw = await telemetry_provider.get_season_calendar_events(target_season, filter_driver_codes=team_driver_codes)
+    # Fetch season calendar events from shared telemetry_provider, filtered by team_name per session
+    events_raw = await telemetry_provider.get_season_calendar_events(target_season, team_name=team_name)
 
     events: List[RaceCalendarEvent] = []
     for ev in events_raw:

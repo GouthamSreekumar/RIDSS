@@ -3,15 +3,17 @@ Comprehensive verification test script for Team Manager Race Calendar fixes:
 1. Verifies completed/upcoming date comparison against past and future dates.
 2. Verifies exclusion of pre-season testing events from calendar event list.
 3. Verifies national flag mapping utility covers all F1 calendar locations.
+4. Verifies per-session team driver results data accuracy.
 """
 import asyncio
 import logging
 from datetime import datetime, timezone
 import pandas as pd
+from sqlalchemy import select
 
 from app.db.session import AsyncSessionLocal, engine
 from app.models.user import User
-from app.services.race_telemetry import get_team_driver_codes
+from app.services.race_telemetry import get_team_name_by_id
 from app.services.telemetry_provider import telemetry_provider
 
 logging.basicConfig(level=logging.INFO)
@@ -20,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 async def main():
     async with AsyncSessionLocal() as db:
-        logger.info("=== 1. Testing Team Manager User Resolution ===")
+        logger.info("=== 1. Testing Team Manager User & Team Resolution ===")
         res = await db.execute(select(User).where(User.team_id.isnot(None)))
         manager = res.scalars().first()
         if not manager or not manager.team_id:
@@ -28,10 +30,11 @@ async def main():
             return
         logger.info("Manager: %s, Team ID: %s", manager.full_name, manager.team_id)
 
-        driver_codes_2026 = await get_team_driver_codes(db, manager.team_id, 2026)
+        team_name = await get_team_name_by_id(db, manager.team_id)
+        logger.info("Resolved Team Name: %s", team_name)
 
         logger.info("=== 2. Testing 2026 Race Calendar Fetch & Testing Event Exclusion ===")
-        events_2026 = await telemetry_provider.get_season_calendar_events(2026, filter_driver_codes=driver_codes_2026)
+        events_2026 = await telemetry_provider.get_season_calendar_events(2026, team_name=team_name)
         logger.info("Total 2026 championship events (excluding testing): %s", len(events_2026))
 
         # FIX 2 VERIFICATION: No testing sessions should be in the list
@@ -67,18 +70,22 @@ async def main():
         assert abu_dhabi_gp["is_completed"] is False, f"Abu Dhabi GP (Dec 2026) should be upcoming, got is_completed={abu_dhabi_gp['is_completed']}"
         logger.info("[VERIFIED FUTURE RACE] Round %s %s: date=%s, is_completed=%s", abu_dhabi_gp["round_number"], abu_dhabi_gp["event_name"], abu_dhabi_gp["event_date"], abu_dhabi_gp["is_completed"])
 
-        logger.info("=== 3. Testing 2023 Past Season (All Completed) ===")
-        driver_codes_2023 = await get_team_driver_codes(db, manager.team_id, 2023)
-        events_2023 = await telemetry_provider.get_season_calendar_events(2023, filter_driver_codes=driver_codes_2023)
+        logger.info("=== 3. Testing 2023 Past Season (All Completed & Driver Accuracy) ===")
+        events_2023 = await telemetry_provider.get_season_calendar_events(2023, team_name=team_name)
         logger.info("Total 2023 events: %s", len(events_2023))
         completed_2023 = [e for e in events_2023 if e["is_completed"]]
         assert len(completed_2023) == len(events_2023), f"All 2023 events should be completed, got {len(completed_2023)} / {len(events_2023)}"
-        logger.info("[VERIFIED PAST SEASON] All %s events in 2023 season correctly classified as completed!", len(events_2023))
+
+        first_completed_2023 = completed_2023[0]
+        results_count = len(first_completed_2023["driver_results"])
+        logger.info("2023 Round 1 driver results count for %s: %d", team_name, results_count)
+        assert 0 < results_count <= 2, f"Expected 1 or 2 drivers for team in Round 1, got {results_count}"
+
+        logger.info("[VERIFIED PAST SEASON] All %s events in 2023 season correctly classified and driver accuracy verified!", len(events_2023))
 
         logger.info("=== CALENDAR FIXES VERIFICATION PASSED CLEANLY! ===")
         await engine.dispose()
 
 
 if __name__ == "__main__":
-    from sqlalchemy import select
     asyncio.run(main())
