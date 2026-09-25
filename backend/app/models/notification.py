@@ -24,6 +24,8 @@ class Notification(Base):
     title = Column(String, nullable=False)
     message = Column(Text, nullable=False)
     status = Column(String, default=NotificationStatus.UNREAD.value, nullable=False)
+    reference_type = Column(String, nullable=True)
+    reference_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     user = relationship("User", back_populates="notifications")

@@ -19,6 +19,7 @@ export interface VehicleSummary {
   chassis: string;
   engine: string;
   status: string;
+  health_status?: "good" | "needs_attention" | "critical" | string;
 }
 
 export interface DriverVehicleAssignment {
@@ -50,6 +51,7 @@ export interface TeamVehicleItem {
   chassis: string;
   engine: string;
   status: string;
+  health_status?: "good" | "needs_attention" | "critical" | string;
   current_driver?: DriverSummary | null;
   current_assignment_id?: string | null;
 }

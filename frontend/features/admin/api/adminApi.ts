@@ -229,11 +229,29 @@ export const archiveNotification = async (notifId: string): Promise<void> => {
 // ── Audit Logs ────────────────────────────────────────────────────────────────
 
 export const fetchAuditLogs = async (params?: {
-  action?: string; entity_type?: string; skip?: number; limit?: number;
+  action?: string; entity_type?: string; user_id?: string; search?: string; skip?: number; limit?: number;
 }): Promise<AuditLog[]> => {
   const { data } = await apiClient.get<AuditLog[]>("/api/v1/audit-logs", { params });
   return data;
 };
+
+export const exportAuditLogsCsv = async (params?: {
+  action?: string; entity_type?: string; user_id?: string; search?: string;
+}): Promise<void> => {
+  const response = await apiClient.get("/api/v1/audit-logs/export", {
+    params,
+    responseType: "blob",
+  });
+  const url = window.URL.createObjectURL(new Blob([response.data], { type: "text/csv" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.setAttribute("download", "ridss_audit_logs.csv");
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+};
+
 
 // ── System Settings ───────────────────────────────────────────────────────────
 
@@ -246,3 +264,54 @@ export const updateSettings = async (settings: Record<string, string>): Promise<
   const { data } = await apiClient.put<SystemSetting[]>("/api/v1/settings", { settings });
   return data;
 };
+
+// ── System Health & Login History ─────────────────────────────────────────────
+
+export interface DatabaseHealth {
+  status: "Healthy" | "Unreachable";
+  response_time_ms: number | null;
+  details: string;
+}
+
+export interface CacheHealth {
+  status: "Healthy" | "Degraded";
+  size_bytes: number;
+  size_formatted: string;
+  last_prewarm_at: string | null;
+  details: string;
+}
+
+export interface MigrationHealth {
+  status: "Healthy" | "Degraded";
+  current_head: string;
+  applied_version: string;
+  pending: boolean;
+  details: string;
+}
+
+export interface SystemHealthResponse {
+  status: "Healthy" | "Degraded" | "Critical";
+  timestamp: string;
+  database: DatabaseHealth;
+  cache: CacheHealth;
+  migrations: MigrationHealth;
+}
+
+export interface LoginHistoryItem {
+  id: string;
+  user_id: string;
+  logged_in_at: string;
+  ip_address?: string | null;
+  user_agent?: string | null;
+}
+
+export const fetchSystemHealth = async (): Promise<SystemHealthResponse> => {
+  const { data } = await apiClient.get<SystemHealthResponse>("/api/v1/admin/system-health");
+  return data;
+};
+
+export const fetchUserLoginHistory = async (userId: string): Promise<LoginHistoryItem[]> => {
+  const { data } = await apiClient.get<LoginHistoryItem[]>(`/api/v1/admin/users/${userId}/login-history`);
+  return data;
+};
+

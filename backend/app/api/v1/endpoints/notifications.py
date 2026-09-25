@@ -3,7 +3,7 @@ Notifications API endpoints.
 """
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.rbac import rbac_cache, require_permission
@@ -32,6 +32,43 @@ async def list_notifications(
     is_admin = rbac_cache.has_permission(current_user.role_id, "notifications:send")
     if not is_admin:
         stmt = stmt.where(Notification.user_id == current_user.user_id)
+
+    if notification_status:
+        stmt = stmt.where(Notification.status == notification_status)
+
+    stmt = stmt.order_by(Notification.created_at.desc())
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+
+@router.get("/unread-count")
+async def get_unread_notification_count(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("notifications:read")),
+) -> dict:
+    """
+    Get unread notification count for the currently logged-in user.
+    """
+    stmt = (
+        select(func.count(Notification.notification_id))
+        .where(Notification.user_id == current_user.user_id)
+        .where(Notification.status == NotificationStatus.UNREAD.value)
+    )
+    res = await db.execute(stmt)
+    count = res.scalar() or 0
+    return {"unread_count": count}
+
+
+@router.get("/my", response_model=List[NotificationResponse])
+async def get_my_notifications(
+    notification_status: Optional[str] = Query(None, alias="status", description="Filter by status (unread/read/archived)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("notifications:read")),
+) -> List[NotificationResponse]:
+    """
+    View own notifications for currently logged-in user.
+    """
+    stmt = select(Notification).where(Notification.user_id == current_user.user_id)
 
     if notification_status:
         stmt = stmt.where(Notification.status == notification_status)
@@ -90,6 +127,36 @@ async def send_notifications(
     return created_notifications
 
 
+@router.patch("/{notification_id}/read", response_model=NotificationResponse)
+async def mark_notification_read(
+    notification_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("notifications:read")),
+) -> NotificationResponse:
+    """
+    Mark notification as read for currently logged-in user.
+    """
+    res = await db.execute(select(Notification).where(Notification.notification_id == notification_id))
+    notification = res.scalar_one_or_none()
+    if not notification:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Notification with ID '{notification_id}' not found.",
+        )
+
+    is_admin = rbac_cache.has_permission(current_user.role_id, "notifications:send")
+    if not is_admin and notification.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to modify this notification.",
+        )
+
+    notification.status = NotificationStatus.READ.value
+    await db.commit()
+    await db.refresh(notification)
+    return notification
+
+
 @router.patch("/{notification_id}/archive", response_model=NotificationResponse)
 @router.patch("/{notification_id}/status", response_model=NotificationResponse)
 async def update_notification_status(
@@ -123,3 +190,4 @@ async def update_notification_status(
     await db.commit()
     await db.refresh(notification)
     return notification
+

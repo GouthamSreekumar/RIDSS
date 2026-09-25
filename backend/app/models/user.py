@@ -51,3 +51,5 @@ class User(Base):
     notifications = relationship("Notification", back_populates="user")
     reports = relationship("Report", back_populates="generator")
     maintenances = relationship("Maintenance", back_populates="mechanic")
+    login_history = relationship("LoginHistory", back_populates="user", cascade="all, delete-orphan")
+

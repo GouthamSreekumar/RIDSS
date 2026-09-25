@@ -141,6 +141,40 @@ def run_full_prewarm(target_season: int = 2024, quick: bool = False) -> None:
     stats = fastf1_cache.stats()
     logger.info("Pre-warming complete. In-memory cache status: %s", stats)
 
+    # Record pre-warm timestamp in database CacheStatus table
+    try:
+        import asyncio
+        from app.db.session import AsyncSessionLocal
+        from app.models.cache_status import CacheStatus
+        from sqlalchemy import select
+
+        async def _record():
+            now = datetime.now(timezone.utc)
+            async with AsyncSessionLocal() as session:
+                res = await session.execute(select(CacheStatus).where(CacheStatus.id == "default"))
+                cache_row = res.scalar_one_or_none()
+                details_text = f"Pre-warmed season {target_season} (quick={quick}). Memory stats: {stats}"
+                if cache_row:
+                    cache_row.last_prewarm_at = now
+                    cache_row.status = "success"
+                    cache_row.details = details_text
+                    cache_row.updated_at = now
+                else:
+                    cache_row = CacheStatus(
+                        id="default",
+                        last_prewarm_at=now,
+                        status="success",
+                        details=details_text,
+                        updated_at=now,
+                    )
+                    session.add(cache_row)
+                await session.commit()
+                logger.info("Recorded pre-warm timestamp in CacheStatus table.")
+
+        asyncio.run(_record())
+    except Exception as e:
+        logger.warning("Failed to record pre-warm timestamp in database: %s", e)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RIDSS FastF1 Cache Pre-warmer")
@@ -149,3 +183,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     run_full_prewarm(target_season=args.season, quick=args.quick)
+

@@ -415,6 +415,8 @@ async def generate_engineering_report(
         "session_id": payload.session_id,
         "driver_code": payload.driver_code,
         "driver_name": target_driver_name,
+        "driver_id": payload.driver_id,
+        "target_driver_user_id": target_driver_user_id,
         "lap_numbers": payload.lap_numbers or [],
         "key_findings": payload.key_findings,
         "stint_degradation_trend": payload.stint_degradation_trend or "Normal tire degradation observed across stint.",
@@ -460,6 +462,8 @@ async def generate_engineering_report(
             title="New Performance Report Available",
             message=f"Race Engineer {current_user.full_name} generated a session performance analysis report for your run in session {payload.session_id}.",
             status="unread",
+            reference_type="report",
+            reference_id=new_report.report_id,
             created_at=datetime.now(timezone.utc),
         )
         db.add(notification)

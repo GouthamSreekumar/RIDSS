@@ -10,6 +10,7 @@ import {
   Bell,
   ChevronRight,
   Flag,
+  HeartPulse,
   LogOut,
   Settings,
   Shield,
@@ -22,9 +23,11 @@ import { useState } from "react";
 import { logoutUser } from "@/features/auth/api/authApi";
 import { fetchMe } from "@/features/auth/api/authApi";
 import { useQuery } from "@tanstack/react-query";
+import { NotificationIndicator } from "@/components/notifications/NotificationIndicator";
 
 const NAV_ITEMS = [
   { href: "/admin",               label: "Overview",          icon: Activity,      exact: true  },
+  { href: "/admin/system-health", label: "System Health",     icon: HeartPulse,    exact: false },
   { href: "/admin/users",         label: "User Management",   icon: Users,         exact: false },
   { href: "/admin/teams",         label: "Teams",             icon: Trophy,        exact: false },
   { href: "/admin/roles",         label: "Roles & Permissions", icon: Shield,      exact: false },
@@ -33,6 +36,7 @@ const NAV_ITEMS = [
   { href: "/admin/audit-logs",    label: "Audit Logs",        icon: AlertTriangle, exact: false },
   { href: "/admin/settings",      label: "System Settings",   icon: Settings,      exact: false },
 ];
+
 
 export function AdminSidebar() {
   const pathname = usePathname();
@@ -59,14 +63,17 @@ export function AdminSidebar() {
   return (
     <aside className="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-800/60 bg-slate-900">
       {/* ── Top bar ── */}
-      <div className="flex items-center gap-3 border-b border-slate-800/60 px-5 py-4">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ferrari-red/15 ring-1 ring-ferrari-red/30">
-          <Activity size={18} className="text-ferrari-red" />
+      <div className="flex items-center justify-between border-b border-slate-800/60 px-5 py-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ferrari-red/15 ring-1 ring-ferrari-red/30">
+            <Activity size={18} className="text-ferrari-red" />
+          </div>
+          <div>
+            <p className="text-sm font-bold tracking-tight text-slate-100">RIDSS</p>
+            <p className="text-[10px] text-slate-500 tracking-widest uppercase">Admin Panel</p>
+          </div>
         </div>
-        <div>
-          <p className="text-sm font-bold tracking-tight text-slate-100">RIDSS</p>
-          <p className="text-[10px] text-slate-500 tracking-widest uppercase">Admin Panel</p>
-        </div>
+        <NotificationIndicator />
       </div>
 
       {/* ── Navigation ── */}
@@ -89,7 +96,8 @@ export function AdminSidebar() {
                 className={`shrink-0 transition-colors ${active ? "text-ferrari-red" : "text-slate-500 group-hover:text-slate-300"}`}
               />
               <span className="flex-1">{item.label}</span>
-              {active && (
+              {item.href.endsWith("/notifications") && <NotificationIndicator />}
+              {active && !item.href.endsWith("/notifications") && (
                 <ChevronRight size={12} className="text-ferrari-red/60" />
               )}
             </Link>

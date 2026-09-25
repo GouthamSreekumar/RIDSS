@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
 from app.db.session import AsyncSessionLocal
@@ -69,23 +69,58 @@ async def seed_redbull_drivers():
         logger.info("Seeding Red Bull Drivers for Team ID: %s", team.team_id)
 
         for d_info in RED_BULL_DRIVERS:
-            # Check by fastf1_code
+            # 1. Query Driver by fastf1_code
             drv_res = await session.execute(
-                select(Driver).options(selectinload(Driver.user)).where(Driver.fastf1_code == d_info["fastf1_code"])
+                select(Driver)
+                .options(selectinload(Driver.user))
+                .where(Driver.fastf1_code == d_info["fastf1_code"])
             )
             driver = drv_res.scalars().first()
 
-            if driver:
-                logger.info("Updating existing driver: %s (%s)", d_info["full_name"], d_info["fastf1_code"])
-                driver.driver_number = d_info["driver_number"]
-                driver.fastf1_driver_number = d_info["driver_number"]
-                driver.nationality = d_info["nationality"]
-                if driver.user:
-                    driver.user.full_name = d_info["full_name"]
-                    driver.user.team_id = team.team_id
+            # 2. Query User by email
+            user_res = await session.execute(
+                select(User)
+                .options(selectinload(User.driver_profile))
+                .where(User.email == d_info["email"])
+            )
+            user = user_res.scalars().first()
+
+            if driver and driver.user:
+                user = driver.user
+
+            if user:
+                logger.info("Updating user credentials for %s: %s", d_info["full_name"], d_info["email"])
+                user.email = d_info["email"]
+                user.full_name = d_info["full_name"]
+                user.password_hash = hash_password("Driver@2025!")
+                if role:
+                    user.role_id = role.role_id
+                user.team_id = team.team_id
+                user.status = "active"
+
+                if not driver and user.driver_profile:
+                    driver = user.driver_profile
+
+                if driver:
+                    driver.user_id = user.user_id
+                    driver.driver_number = d_info["driver_number"]
+                    driver.fastf1_driver_number = d_info["driver_number"]
+                    driver.fastf1_code = d_info["fastf1_code"]
+                    driver.nationality = d_info["nationality"]
+                    driver.is_active = True
+                else:
+                    driver = Driver(
+                        user_id=user.user_id,
+                        driver_number=d_info["driver_number"],
+                        fastf1_driver_number=d_info["driver_number"],
+                        fastf1_code=d_info["fastf1_code"],
+                        nationality=d_info["nationality"],
+                        is_active=True,
+                    )
+                    session.add(driver)
             else:
-                logger.info("Creating new driver: %s (%s)", d_info["full_name"], d_info["fastf1_code"])
-                usr = User(
+                logger.info("Creating new user & driver for: %s (%s)", d_info["full_name"], d_info["email"])
+                user = User(
                     email=d_info["email"],
                     password_hash=hash_password("Driver@2025!"),
                     full_name=d_info["full_name"],
@@ -93,17 +128,26 @@ async def seed_redbull_drivers():
                     team_id=team.team_id,
                     status="active",
                 )
-                session.add(usr)
+                session.add(user)
                 await session.flush()
 
-                driver = Driver(
-                    user_id=usr.user_id,
-                    driver_number=d_info["driver_number"],
-                    fastf1_driver_number=d_info["driver_number"],
-                    fastf1_code=d_info["fastf1_code"],
-                    nationality=d_info["nationality"],
-                )
-                session.add(driver)
+                if driver:
+                    driver.user_id = user.user_id
+                    driver.driver_number = d_info["driver_number"]
+                    driver.fastf1_driver_number = d_info["driver_number"]
+                    driver.fastf1_code = d_info["fastf1_code"]
+                    driver.nationality = d_info["nationality"]
+                    driver.is_active = True
+                else:
+                    driver = Driver(
+                        user_id=user.user_id,
+                        driver_number=d_info["driver_number"],
+                        fastf1_driver_number=d_info["driver_number"],
+                        fastf1_code=d_info["fastf1_code"],
+                        nationality=d_info["nationality"],
+                        is_active=True,
+                    )
+                    session.add(driver)
 
         await session.commit()
         logger.info("Red Bull drivers seeded successfully!")

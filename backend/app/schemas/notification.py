@@ -10,6 +10,8 @@ class NotificationCreate(BaseModel):
     user_ids: List[str]  # Target users
     title: str = Field(..., min_length=2, max_length=200)
     message: str = Field(..., min_length=2)
+    reference_type: Optional[str] = None
+    reference_id: Optional[str] = None
 
 
 class NotificationResponse(BaseModel):
@@ -18,6 +20,8 @@ class NotificationResponse(BaseModel):
     title: str
     message: str
     status: str
+    reference_type: Optional[str] = None
+    reference_id: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

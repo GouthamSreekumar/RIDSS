@@ -6,6 +6,7 @@
  */
 import {
   Activity,
+  Bell,
   ChevronRight,
   Cpu,
   FileText,
@@ -19,12 +20,14 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { fetchMe, logoutUser } from "@/features/auth/api/authApi";
 import { useQuery } from "@tanstack/react-query";
+import { NotificationIndicator } from "@/components/notifications/NotificationIndicator";
 
 const NAV_ITEMS = [
   { href: "/race-engineer", label: "Dashboard", icon: LayoutDashboard, exact: true },
   { href: "/race-engineer/roster", label: "Team roster", icon: Users, exact: false },
   { href: "/race-engineer/telemetry", label: "Telemetry analysis", icon: Gauge, exact: false },
   { href: "/race-engineer/reports", label: "Engineering reports", icon: FileText, exact: false },
+  { href: "/race-engineer/notifications", label: "Notifications", icon: Bell, exact: false },
 ];
 
 export function RaceEngineerSidebar() {
@@ -54,14 +57,17 @@ export function RaceEngineerSidebar() {
   return (
     <aside className="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-800 bg-graphite font-sans">
       {/* ── Top branding ── */}
-      <div className="flex items-center gap-3 border-b border-slate-800 px-5 py-4 bg-slate-900/60">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center border border-cyan-400/40 bg-cyan-400/10 text-cyan-400">
-          <Cpu size={16} />
+      <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4 bg-slate-900/60">
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center border border-cyan-400/40 bg-cyan-400/10 text-cyan-400">
+            <Cpu size={16} />
+          </div>
+          <div>
+            <p className="text-sm font-bold tracking-tight text-slate-100 font-mono">RIDSS</p>
+            <p className="text-xs text-cyan-400 font-mono">Race engineering</p>
+          </div>
         </div>
-        <div>
-          <p className="text-sm font-bold tracking-tight text-slate-100 font-mono">RIDSS</p>
-          <p className="text-xs text-cyan-400 font-mono">Race engineering</p>
-        </div>
+        <NotificationIndicator />
       </div>
 
       {/* ── Navigation Items ── */}
@@ -84,7 +90,8 @@ export function RaceEngineerSidebar() {
                 className={`shrink-0 ${active ? "text-cyan-400" : "text-slate-500 group-hover:text-slate-300"}`}
               />
               <span className="flex-1 font-medium">{item.label}</span>
-              {active && <ChevronRight size={12} className="text-cyan-400 shrink-0" />}
+              {item.href.endsWith("/notifications") && <NotificationIndicator />}
+              {active && !item.href.endsWith("/notifications") && <ChevronRight size={12} className="text-cyan-400 shrink-0" />}
             </Link>
           );
         })}
@@ -113,3 +120,4 @@ export function RaceEngineerSidebar() {
     </aside>
   );
 }
+

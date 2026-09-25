@@ -6,6 +6,7 @@
  */
 import {
   Activity,
+  Bell,
   Calendar,
   ChevronRight,
   FileText,
@@ -18,12 +19,14 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { fetchMe, logoutUser } from "@/features/auth/api/authApi";
 import { useQuery } from "@tanstack/react-query";
+import { NotificationIndicator } from "@/components/notifications/NotificationIndicator";
 
 const NAV_ITEMS = [
   { href: "/team-manager", label: "Dashboard", icon: LayoutDashboard, exact: true },
   { href: "/team-manager/calendar", label: "Race Calendar", icon: Calendar, exact: false },
   { href: "/team-manager/roster", label: "Roster & Pairings", icon: Users, exact: false },
   { href: "/team-manager/reports", label: "Team Reports", icon: FileText, exact: false },
+  { href: "/team-manager/notifications", label: "Notifications", icon: Bell, exact: false },
 ];
 
 export function TeamManagerSidebar() {
@@ -53,14 +56,17 @@ export function TeamManagerSidebar() {
   return (
     <aside className="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-800 bg-graphite font-sans">
       {/* ── Top bar ── */}
-      <div className="flex items-center gap-3 border-b border-slate-800 px-5 py-4 bg-slate-900/60">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center border border-ferrari-red/40 bg-ferrari-red/10 text-ferrari-red">
-          <Activity size={16} />
+      <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4 bg-slate-900/60">
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center border border-ferrari-red/40 bg-ferrari-red/10 text-ferrari-red">
+            <Activity size={16} />
+          </div>
+          <div>
+            <p className="text-sm font-bold tracking-tight text-slate-100 font-mono">RIDSS</p>
+            <p className="text-xs text-amber font-mono">Team workspace</p>
+          </div>
         </div>
-        <div>
-          <p className="text-sm font-bold tracking-tight text-slate-100 font-mono">RIDSS</p>
-          <p className="text-xs text-amber font-mono">Team workspace</p>
-        </div>
+        <NotificationIndicator />
       </div>
 
       {/* ── Navigation ── */}
@@ -83,7 +89,8 @@ export function TeamManagerSidebar() {
                 className={`shrink-0 ${active ? "text-ferrari-red" : "text-slate-500 group-hover:text-slate-300"}`}
               />
               <span className="flex-1 font-medium">{item.label}</span>
-              {active && <ChevronRight size={12} className="text-ferrari-red shrink-0" />}
+              {item.href.endsWith("/notifications") && <NotificationIndicator />}
+              {active && !item.href.endsWith("/notifications") && <ChevronRight size={12} className="text-ferrari-red shrink-0" />}
             </Link>
           );
         })}
@@ -112,3 +119,4 @@ export function TeamManagerSidebar() {
     </aside>
   );
 }
+

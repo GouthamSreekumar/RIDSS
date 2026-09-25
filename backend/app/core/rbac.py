@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import _get_current_user
-from app.db.session import AsyncSessionLocal
+from app.db.session import AsyncSessionLocal, get_db
 from app.models.permission import Permission
 from app.models.role import Role
 from app.models.role_permission import RolePermission
@@ -78,10 +78,16 @@ rbac_cache = RBACCacheEngine()
 def require_permission(permission_key: str) -> Callable:
     """
     FastAPI dependency factory enforcing server-side RBAC permissions via cached lookup.
+    Automatically reloads cache from DB on miss to handle dynamically seeded permissions.
     """
     async def permission_checker(
+        db: AsyncSession = Depends(get_db),
         current_user: User = Depends(_get_current_user),
     ) -> User:
+        if not rbac_cache.has_permission(current_user.role_id, permission_key):
+            # Attempt a quick cache refresh from DB in case new permissions were recently seeded
+            await rbac_cache.invalidate(db)
+
         if not rbac_cache.has_permission(current_user.role_id, permission_key):
             logger.warning(
                 "Access denied for user %s (role_id=%s) requiring permission '%s'",

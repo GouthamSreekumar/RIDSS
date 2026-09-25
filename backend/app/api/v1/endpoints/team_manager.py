@@ -37,6 +37,7 @@ from app.schemas.team_manager import (
     VehicleSummary,
 )
 from app.services.audit import log_audit_event
+from app.services.mechanic_health import get_vehicle_health
 from app.services.race_telemetry import get_team_driver_codes
 from app.services.telemetry_provider import telemetry_provider
 
@@ -189,11 +190,13 @@ async def get_team_drivers(
         current_assignment_id = None
         if assignment and assignment.vehicle:
             v = assignment.vehicle
+            v_health = await get_vehicle_health(db, v.vehicle_id)
             current_vehicle = VehicleSummary(
                 vehicle_id=v.vehicle_id,
                 chassis=v.chassis,
                 engine=v.engine,
                 status=v.status,
+                health_status=v_health["health_status"],
             )
             current_assignment_id = assignment.assignment_id
 
@@ -241,6 +244,7 @@ async def get_team_vehicles(
     vehicle_items: List[TeamVehicleItem] = []
     for v in vehicles:
         assignment = active_assignments.get(v.vehicle_id)
+        v_health = await get_vehicle_health(db, v.vehicle_id)
         current_driver = None
         current_assignment_id = None
         if assignment and assignment.driver:
@@ -261,6 +265,7 @@ async def get_team_vehicles(
                 chassis=v.chassis,
                 engine=v.engine,
                 status=v.status,
+                health_status=v_health["health_status"],
                 current_driver=current_driver,
                 current_assignment_id=current_assignment_id,
             )
@@ -305,6 +310,15 @@ async def assign_driver_to_vehicle(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Vehicle does not exist or does not belong to your team.",
+        )
+
+    # 2b. CRITICAL Integration Check: Block driver assignment if vehicle health is CRITICAL
+    health_info = await get_vehicle_health(db, payload.vehicle_id)
+    if health_info["health_status"] == "critical":
+        crit_list = ", ".join(health_info["critical_components"]) if health_info["critical_components"] else "one or more components"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Vehicle '{vehicle.chassis}' cannot be assigned to a driver because its health status is CRITICAL due to component(s): {crit_list}. Complete required maintenance before assignment.",
         )
 
     # 3. Deactivate any existing active assignments for this driver or vehicle
@@ -358,6 +372,8 @@ async def assign_driver_to_vehicle(
         title="Vehicle Assignment Updated",
         message=f"You have been assigned to car #{driver.driver_number} ({vehicle.chassis} / {vehicle.engine}) for season {new_assignment.season}.",
         status="unread",
+        reference_type="assignment",
+        reference_id=new_assignment.assignment_id,
         created_at=datetime.now(timezone.utc),
     )
     db.add(notification)
@@ -443,6 +459,8 @@ async def unassign_driver(
             title="Vehicle Assignment Updated",
             message=f"Your vehicle assignment (Chassis: {assignment.vehicle.chassis if assignment.vehicle else 'N/A'}) has been unassigned.",
             status="unread",
+            reference_type="assignment",
+            reference_id=assignment.assignment_id,
             created_at=datetime.now(timezone.utc),
         )
         db.add(notification)

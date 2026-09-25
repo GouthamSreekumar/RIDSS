@@ -2,9 +2,12 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    admin_system,
     audit_logs,
     auth,
     dashboard,
+    driver,
+    mechanic,
     notifications,
     race_engineer,
     races_circuits,
@@ -19,6 +22,7 @@ router = APIRouter(prefix="/api/v1")
 
 router.include_router(auth.router)
 router.include_router(dashboard.router)
+router.include_router(admin_system.router)
 router.include_router(users.router)
 router.include_router(teams.router)
 router.include_router(roles.roles_router)
@@ -30,4 +34,8 @@ router.include_router(audit_logs.router)
 router.include_router(settings.router)
 router.include_router(team_manager.router)
 router.include_router(race_engineer.router)
+router.include_router(driver.router)
+router.include_router(mechanic.router)
+
+
 

@@ -18,6 +18,17 @@ Last updated: 2026-08-16
 - [x] Audit Logs (with auto-logging, incl. permission-change logging)
 - [x] System Settings
 
+## Administrator Module — System Health & Login History
+- [x] LoginHistory table + migration
+- [x] Login handler writes LoginHistory record on every successful login
+- [x] CacheStatus table + pre-warm script updated to record last run
+- [x] GET /api/v1/admin/system-health API (DB, cache, migrations, overall status)
+- [x] System health page (color-coded status cards)
+- [x] GET /api/v1/admin/users/{id}/login-history API
+- [x] Login history added to existing user detail view
+- [x] Verified Administrator-only access on both features
+
+
 ## Team Manager Module
 - [x] Report table extended (data, team_id columns)
 - [x] DriverVehicleAssignment table + constraints (one active pairing per driver/vehicle)
@@ -61,5 +72,26 @@ Last updated: 2026-08-16
 - [x] Track map rebuilt from get_circuit_info() + reference-lap outline (no DRS/speed-trap markers)
 - [x] Tier 1 enriched: session.results header, sector times, Deleted/IsAccurate flags
 - [x] Comparison mode uses fastf1.utils.delta_time() + fastf1.plotting colors
+
+## Driver Module
+- [x] Dashboard API + page (season points, last result, recent notifications/reports)
+- [x] Reports API + page (own reports only, detail view)
+- [x] Session history API + page (season filter, reuses shared season-aware filtering)
+- [x] Notifications API + page (own notifications, read-state tracking, deep-link to referenced content)
+- [x] Notification-creation code in Race Engineer/Team Manager updated to store a reference (report_id/context) for deep-linking
+- [x] Own-driver filtering verified server-side on every endpoint — no cross-driver data leakage
+- [x] Design tokens consistent with Team Manager/Race Engineer
+
+## Mechanic Module
+- [x] get_vehicle_health() service function (computed roll-up from components)
+- [x] Team Manager's assign_driver_to_vehicle() updated to block Critical vehicles, warn on Needs Attention
+- [x] Dashboard API + page (health status counts, upcoming maintenance)
+- [x] Vehicle list + component detail API + pages
+- [x] Maintenance scheduling + status update + history API + pages
+- [x] Audit logging verified for all write actions
+- [x] Notification to Team Manager on vehicle reaching Critical health
+- [x] Design tokens consistent with other modules
+
+
 
 

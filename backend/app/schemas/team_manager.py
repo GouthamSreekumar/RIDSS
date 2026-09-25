@@ -28,6 +28,7 @@ class VehicleSummary(BaseModel):
     chassis: str
     engine: str
     status: str
+    health_status: Optional[str] = "good"
 
     class Config:
         from_attributes = True
@@ -65,6 +66,7 @@ class TeamVehicleItem(BaseModel):
     chassis: str
     engine: str
     status: str
+    health_status: Optional[str] = "good"
     current_driver: Optional[DriverSummary] = None
     current_assignment_id: Optional[str] = None
 

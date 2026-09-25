@@ -2,9 +2,9 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Activity, AlertCircle, AlertTriangle, ChevronRight, Clock, Filter, Search } from "lucide-react";
+import { Activity, AlertCircle, AlertTriangle, ChevronRight, Clock, Download, Filter, Search } from "lucide-react";
 import { useState } from "react";
-import { fetchAuditLogs, type AuditLog } from "@/features/admin/api/adminApi";
+import { exportAuditLogsCsv, fetchAuditLogs, type AuditLog } from "@/features/admin/api/adminApi";
 
 const ACTION_COLOR: Record<string, string> = {
   USER_CREATE:              "text-success-green bg-success-green/10 ring-success-green/20",
@@ -92,6 +92,7 @@ export default function AuditLogsPage() {
   const [entityFilter, setEntityFilter] = useState("");
   const [search, setSearch] = useState("");
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const { data: logs = [], isLoading, isError } = useQuery({
     queryKey: ["admin-audit-logs", actionFilter, entityFilter],
@@ -102,6 +103,21 @@ export default function AuditLogsPage() {
     }),
     refetchInterval: 30_000,
   });
+
+  const handleExportCsv = async () => {
+    setExporting(true);
+    try {
+      await exportAuditLogsCsv({
+        action: actionFilter || undefined,
+        entity_type: entityFilter || undefined,
+        search: search || undefined,
+      });
+    } catch (e) {
+      console.error("Failed to export audit logs CSV:", e);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const filtered = logs.filter(l => {
     if (!search) return true;
@@ -119,11 +135,21 @@ export default function AuditLogsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-100">Audit Logs</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Immutable security audit trail — all administrative actions.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-100">Audit Logs</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Immutable security audit trail — all administrative actions.
+          </p>
+        </div>
+        <button
+          onClick={handleExportCsv}
+          disabled={exporting}
+          className="flex items-center gap-2 rounded-lg bg-ferrari-red px-4 py-2.5 text-sm font-semibold text-white hover:bg-ferrari-red/90 transition-all disabled:opacity-50"
+        >
+          <Download size={15} />
+          {exporting ? "Exporting CSV…" : "Export CSV"}
+        </button>
       </div>
 
       {/* Filters */}
@@ -155,6 +181,7 @@ export default function AuditLogsPage() {
           {uniqueEntities.map(e => <option key={e} value={e}>{e}</option>)}
         </select>
       </div>
+
 
       {/* Split view: log list + detail panel */}
       <div className="flex gap-4 min-h-[500px]">

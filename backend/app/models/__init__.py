@@ -16,6 +16,8 @@ from app.models.report import Report
 from app.models.driver_vehicle_assignment import DriverVehicleAssignment
 from app.models.audit import AuditLog
 from app.models.settings import SystemSettings, SettingCategory
+from app.models.login_history import LoginHistory
+from app.models.cache_status import CacheStatus
 
 __all__ = [
     "Base",
@@ -42,5 +44,8 @@ __all__ = [
     "AuditLog",
     "SystemSettings",
     "SettingCategory",
+    "LoginHistory",
+    "CacheStatus",
 ]
+
 

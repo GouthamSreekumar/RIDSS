@@ -45,9 +45,12 @@ function AssignModal({
   const selectedDriver = drivers.find((d) => d.driver_id === selectedDriverId);
   const selectedVehicle = vehicles.find((v) => v.vehicle_id === selectedVehicleId);
 
+  const isVehicleCritical = selectedVehicle?.health_status === "critical";
+  const isVehicleAttention = selectedVehicle?.health_status === "needs_attention";
+
   const driverAlreadyPaired = Boolean(selectedDriver?.current_vehicle);
   const vehicleAlreadyPaired = Boolean(selectedVehicle?.current_driver);
-  const requiresReassignWarning = (driverAlreadyPaired || vehicleAlreadyPaired) && !confirmedReassign;
+  const requiresReassignWarning = (driverAlreadyPaired || vehicleAlreadyPaired) && !confirmedReassign && !isVehicleCritical;
 
   const handleSubmit = (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -55,6 +58,11 @@ function AssignModal({
 
     if (!selectedDriverId || !selectedVehicleId) {
       setErr("Please select both a driver and a vehicle.");
+      return;
+    }
+
+    if (isVehicleCritical) {
+      setErr(`Vehicle '${selectedVehicle?.chassis}' is in CRITICAL health status and is blocked from assignment.`);
       return;
     }
 
@@ -140,11 +148,18 @@ function AssignModal({
               required
             >
               <option value="">Choose a team car…</option>
-              {vehicles.map((v) => (
-                <option key={v.vehicle_id} value={v.vehicle_id}>
-                  {v.chassis} ({v.engine}) — {v.current_driver ? `(Assigned: #${v.current_driver.driver_number})` : "(Available)"}
-                </option>
-              ))}
+              {vehicles.map((v) => {
+                const healthTag = v.health_status === "critical"
+                  ? " [CRITICAL - BLOCKED]"
+                  : v.health_status === "needs_attention"
+                  ? " [NEEDS ATTENTION]"
+                  : " [GOOD]";
+                return (
+                  <option key={v.vehicle_id} value={v.vehicle_id}>
+                    {v.chassis} ({v.engine}){healthTag} — {v.current_driver ? `(Assigned: #${v.current_driver.driver_number})` : "(Available)"}
+                  </option>
+                );
+              })}
             </select>
           </div>
 
@@ -160,6 +175,38 @@ function AssignModal({
               required
             />
           </div>
+
+          {/* CRITICAL Health Block Warning */}
+          {isVehicleCritical && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="border border-red-500/40 bg-red-950/30 p-3 text-xs text-red-400 space-y-1 border-l-2 border-l-red-500"
+            >
+              <div className="flex items-center gap-1.5 font-bold font-mono">
+                <AlertCircle size={13} /> ASSIGNMENT BLOCKED: CRITICAL HEALTH
+              </div>
+              <p className="text-[11px] text-red-300/90 font-mono">
+                Vehicle {selectedVehicle?.chassis} is in CRITICAL health status. Mechanic maintenance must resolve component issues before this vehicle can be paired with a driver.
+              </p>
+            </motion.div>
+          )}
+
+          {/* NEEDS ATTENTION Warning Flag */}
+          {isVehicleAttention && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="border border-amber/40 bg-amber/10 p-3 text-xs text-amber space-y-1 border-l-2 border-l-amber"
+            >
+              <div className="flex items-center gap-1.5 font-semibold font-mono">
+                <AlertTriangle size={13} /> WARNING: VEHICLE NEEDS ATTENTION
+              </div>
+              <p className="text-[11px] text-amber/90 font-mono">
+                Vehicle {selectedVehicle?.chassis} has component wear/warnings (Needs Attention). Assignment is permitted, but proceed with caution.
+              </p>
+            </motion.div>
+          )}
 
           {/* Reassignment Confirmation Warning */}
           {requiresReassignWarning && (
@@ -197,11 +244,13 @@ function AssignModal({
             </button>
             <button
               type="submit"
-              disabled={assignMutation.isPending}
-              className="flex-1 border border-ferrari-red bg-ferrari-red py-2 text-xs font-mono font-semibold text-white hover:bg-ferrari-red/90 disabled:opacity-60 transition-colors"
+              disabled={isVehicleCritical || assignMutation.isPending}
+              className="flex-1 border border-ferrari-red bg-ferrari-red py-2 text-xs font-mono font-semibold text-white hover:bg-ferrari-red/90 disabled:opacity-40 transition-colors"
             >
               {assignMutation.isPending
                 ? "Assigning…"
+                : isVehicleCritical
+                ? "Blocked"
                 : requiresReassignWarning
                 ? "Confirm & reassign"
                 : "Confirm pairing"}
@@ -509,15 +558,37 @@ export default function TeamRosterPage() {
               <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                 {vehicles.map((v) => {
                   const isAssigned = Boolean(v.current_driver);
+                  const isCritical = v.health_status === "critical";
+                  const isAttention = v.health_status === "needs_attention";
+
                   return (
                     <div
                       key={v.vehicle_id}
                       className={`flex items-center justify-between p-3 border border-slate-800 bg-slate-900/60 border-l-2 ${
-                        isAssigned ? "border-l-emerald-500" : "border-l-amber"
+                        isCritical
+                          ? "border-l-red-500"
+                          : isAttention
+                          ? "border-l-amber"
+                          : isAssigned
+                          ? "border-l-emerald-500"
+                          : "border-l-slate-700"
                       }`}
                     >
                       <div>
-                        <p className="text-xs font-mono font-semibold text-slate-100">{v.chassis}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-mono font-semibold text-slate-100">{v.chassis}</p>
+                          <span
+                            className={`px-1.5 py-0.5 text-[9px] font-mono font-bold uppercase ${
+                              isCritical
+                                ? "border border-red-500/40 bg-red-950/40 text-red-400"
+                                : isAttention
+                                ? "border border-amber/40 bg-amber/10 text-amber"
+                                : "border border-emerald-500/30 bg-emerald-950/30 text-emerald-400"
+                            }`}
+                          >
+                            {v.health_status?.replace("_", " ") ?? "good"}
+                          </span>
+                        </div>
                         <p className="text-[11px] text-slate-500 font-mono">{v.engine}</p>
                       </div>
                       {isAssigned ? (

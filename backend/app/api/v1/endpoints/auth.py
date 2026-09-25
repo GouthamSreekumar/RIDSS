@@ -8,7 +8,7 @@ Endpoints:
   GET  /api/v1/auth/me           — return current user from cookie JWT
 """
 import logging
-from datetime import timedelta
+from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from jose import JWTError
@@ -21,6 +21,7 @@ from app.core.csrf import generate_csrf_token
 from app.core.security import create_access_token, decode_access_token, verify_password
 from app.db.session import get_db
 from app.models.user import User
+from app.models.login_history import LoginHistory
 from app.schemas.auth import (
     CSRFTokenResponse,
     LoginRequest,
@@ -28,6 +29,7 @@ from app.schemas.auth import (
     TokenResponse,
     UserMeResponse,
 )
+
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -82,13 +84,16 @@ async def get_csrf_token(response: Response) -> CSRFTokenResponse:
 
 
 @router.post("/login", response_model=TokenResponse)
+
 async def login(
     credentials: LoginRequest,
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
     """
     Authenticate a user and set httpOnly JWT + readable CSRF cookies.
+    Also records a LoginHistory entry.
     """
     _auth_failure = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -112,6 +117,18 @@ async def login(
 
     role_name = user.role.role_name if user.role else ""
 
+    # Record login history event
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    login_entry = LoginHistory(
+        user_id=user.user_id,
+        logged_in_at=datetime.now(timezone.utc),
+        ip_address=client_ip,
+        user_agent=user_agent,
+    )
+    db.add(login_entry)
+    await db.commit()
+
     # Issue JWT with role claim
     access_token = create_access_token(
         data={"sub": user.user_id, "role": role_name, "role_id": user.role_id, "email": user.email},
@@ -131,6 +148,7 @@ async def login(
         email=user.email,
         full_name=user.full_name,
     )
+
 
 
 @router.post("/logout", response_model=MessageResponse)

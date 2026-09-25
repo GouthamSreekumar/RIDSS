@@ -3,7 +3,7 @@ Vehicle SQLAlchemy model.
 """
 import enum
 import uuid
-from sqlalchemy import Column, ForeignKey, String
+from sqlalchemy import Column, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.models.base import Base
@@ -27,3 +27,8 @@ class Vehicle(Base):
     team = relationship("Team", back_populates="vehicles")
     components = relationship("Component", back_populates="vehicle")
     maintenances = relationship("Maintenance", back_populates="vehicle")
+
+    __table_args__ = (
+        UniqueConstraint("team_id", "chassis", name="uq_vehicles_team_chassis"),
+    )
+

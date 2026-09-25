@@ -13,9 +13,11 @@ from app.models.base import Base
 class ComponentStatus(str, enum.Enum):
     NEW = "new"
     GOOD = "good"
+    NEEDS_ATTENTION = "needs_attention"
     WORN = "worn"
     CRITICAL = "critical"
     REPLACED = "replaced"
+
 
 
 class MaintenanceStatus(str, enum.Enum):
