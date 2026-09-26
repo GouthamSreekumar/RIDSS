@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Activity, AlertCircle, AlertTriangle, ChevronRight, Clock, Download, Filter, Search } from "lucide-react";
+import { Activity, AlertCircle, AlertTriangle, Calendar, ChevronRight, Clock, Download, Filter, Search } from "lucide-react";
 import { useState } from "react";
 import { exportAuditLogsCsv, fetchAuditLogs, type AuditLog } from "@/features/admin/api/adminApi";
 
@@ -10,8 +10,12 @@ const ACTION_COLOR: Record<string, string> = {
   USER_CREATE:              "text-success-green bg-success-green/10 ring-success-green/20",
   USER_UPDATE:              "text-blue-400 bg-blue-400/10 ring-blue-400/20",
   USER_STATUS_TOGGLE:       "text-amber bg-amber/10 ring-amber/20",
+  user_status_bulk_changed: "text-amber bg-amber/10 ring-amber/20",
   ROLE_CREATE:              "text-purple-400 bg-purple-400/10 ring-purple-400/20",
+  role_duplicated:          "text-purple-400 bg-purple-400/10 ring-purple-400/20",
   ROLE_PERMISSIONS_UPDATE:  "text-ferrari-red bg-ferrari-red/10 ring-ferrari-red/20",
+  RETENTION_SETTINGS_UPDATE:"text-amber bg-amber/10 ring-amber/20",
+  retention_pruning_executed:"text-orange-400 bg-orange-400/10 ring-orange-400/20",
   TEAM_CREATE:              "text-cyan-400 bg-cyan-400/10 ring-cyan-400/20",
   TEAM_UPDATE:              "text-cyan-400 bg-cyan-400/10 ring-cyan-400/20",
   TEAM_MEMBER_ASSIGN:       "text-teal-400 bg-teal-400/10 ring-teal-400/20",
@@ -85,20 +89,43 @@ function DetailsPanel({ log }: { log: AuditLog | null }) {
   );
 }
 
+function getTodayString() {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
+
 
 export default function AuditLogsPage() {
   const [actionFilter, setActionFilter] = useState("");
   const [entityFilter, setEntityFilter] = useState("");
   const [search, setSearch] = useState("");
+
+  // Date filter state
+  const [dateMode, setDateMode] = useState<"all" | "single" | "range">("all");
+  const [singleDate, setSingleDate] = useState<string>(getTodayString());
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
+
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [exportingToday, setExportingToday] = useState(false);
+
+  // Compute active date bounds for query/export
+  const activeDateFrom = dateMode === "single" ? singleDate : dateMode === "range" ? dateFrom : undefined;
+  const activeDateTo = dateMode === "single" ? singleDate : dateMode === "range" ? dateTo : undefined;
 
   const { data: logs = [], isLoading, isError } = useQuery({
-    queryKey: ["admin-audit-logs", actionFilter, entityFilter],
+    queryKey: ["admin-audit-logs", actionFilter, entityFilter, activeDateFrom, activeDateTo],
     queryFn: () => fetchAuditLogs({
       action: actionFilter || undefined,
       entity_type: entityFilter || undefined,
+      date_from: activeDateFrom || undefined,
+      date_to: activeDateTo || undefined,
       limit: 200,
     }),
     refetchInterval: 30_000,
@@ -111,11 +138,31 @@ export default function AuditLogsPage() {
         action: actionFilter || undefined,
         entity_type: entityFilter || undefined,
         search: search || undefined,
+        date_from: activeDateFrom || undefined,
+        date_to: activeDateTo || undefined,
       });
     } catch (e) {
       console.error("Failed to export audit logs CSV:", e);
     } finally {
       setExporting(false);
+    }
+  };
+
+  const handleExportToday = async () => {
+    setExportingToday(true);
+    try {
+      const todayStr = getTodayString();
+      await exportAuditLogsCsv({
+        action: actionFilter || undefined,
+        entity_type: entityFilter || undefined,
+        search: search || undefined,
+        date_from: todayStr,
+        date_to: todayStr,
+      });
+    } catch (e) {
+      console.error("Failed to export today's audit logs CSV:", e);
+    } finally {
+      setExportingToday(false);
     }
   };
 
@@ -142,18 +189,30 @@ export default function AuditLogsPage() {
             Immutable security audit trail — all administrative actions.
           </p>
         </div>
-        <button
-          onClick={handleExportCsv}
-          disabled={exporting}
-          className="flex items-center gap-2 rounded-lg bg-ferrari-red px-4 py-2.5 text-sm font-semibold text-white hover:bg-ferrari-red/90 transition-all disabled:opacity-50"
-        >
-          <Download size={15} />
-          {exporting ? "Exporting CSV…" : "Export CSV"}
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Quick single-day action button */}
+          <button
+            onClick={handleExportToday}
+            disabled={exportingToday}
+            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-graphite-800 px-3.5 py-2.5 text-sm font-semibold text-slate-200 hover:border-slate-500 hover:text-white transition-all disabled:opacity-50"
+            title="Export CSV scoped to current day only"
+          >
+            <Calendar size={15} className="text-ferrari-red" />
+            {exportingToday ? "Exporting Today…" : "Export Today"}
+          </button>
+          <button
+            onClick={handleExportCsv}
+            disabled={exporting}
+            className="flex items-center gap-2 rounded-lg bg-ferrari-red px-4 py-2.5 text-sm font-semibold text-white hover:bg-ferrari-red/90 transition-all disabled:opacity-50"
+          >
+            <Download size={15} />
+            {exporting ? "Exporting CSV…" : "Export CSV"}
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-[200px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
           <input
@@ -180,7 +239,54 @@ export default function AuditLogsPage() {
           <option value="">All entities</option>
           {uniqueEntities.map(e => <option key={e} value={e}>{e}</option>)}
         </select>
+
+        {/* Date Filter Selector */}
+        <select
+          className="rounded-lg border border-slate-700 bg-graphite-800 px-3 py-2 text-sm text-slate-300 focus:outline-none focus:ring-2 focus:ring-ferrari-red transition-all font-medium"
+          value={dateMode}
+          onChange={e => setDateMode(e.target.value as "all" | "single" | "range")}
+        >
+          <option value="all">All Dates</option>
+          <option value="single">Single Day</option>
+          <option value="range">Date Range</option>
+        </select>
+
+        {/* Single Day Picker */}
+        {dateMode === "single" && (
+          <div className="flex items-center gap-1.5 bg-graphite-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-300">
+            <Calendar size={13} className="text-slate-500 shrink-0" />
+            <span className="text-slate-400 font-medium">Date:</span>
+            <input
+              type="date"
+              value={singleDate}
+              onChange={e => setSingleDate(e.target.value)}
+              className="bg-transparent text-slate-100 focus:outline-none border-none text-xs font-mono"
+            />
+          </div>
+        )}
+
+        {/* Date Range Picker */}
+        {dateMode === "range" && (
+          <div className="flex items-center gap-2 bg-graphite-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-300">
+            <Calendar size={13} className="text-slate-500 shrink-0" />
+            <span className="text-slate-400 font-medium">From:</span>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={e => setDateFrom(e.target.value)}
+              className="bg-transparent text-slate-100 focus:outline-none border-none text-xs font-mono"
+            />
+            <span className="text-slate-500 font-medium">To:</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={e => setDateTo(e.target.value)}
+              className="bg-transparent text-slate-100 focus:outline-none border-none text-xs font-mono"
+            />
+          </div>
+        )}
       </div>
+
 
 
       {/* Split view: log list + detail panel */}

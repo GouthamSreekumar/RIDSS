@@ -12,6 +12,7 @@ export interface DriverSummary {
   driver_number: number;
   full_name: string;
   nationality?: string | null;
+  team_since?: string | null;
 }
 
 export interface VehicleSummary {
@@ -29,9 +30,22 @@ export interface DriverVehicleAssignment {
   vehicle_id: string;
   status: string;
   assigned_at: string;
+  unassigned_at?: string | null;
   season?: number | null;
   driver?: DriverSummary | null;
   vehicle?: VehicleSummary | null;
+}
+
+export interface VehiclePairingHistoryItem {
+  assignment_id: string;
+  vehicle_id: string;
+  driver_id: string;
+  driver_name: string;
+  driver_number: number;
+  assigned_at: string;
+  unassigned_at?: string | null;
+  status: string;
+  season?: number | null;
 }
 
 export interface TeamDriverItem {
@@ -41,8 +55,17 @@ export interface TeamDriverItem {
   nationality?: string | null;
   full_name: string;
   email: string;
+  team_since?: string | null;
+  is_active: boolean;
   current_vehicle?: VehicleSummary | null;
   current_assignment_id?: string | null;
+}
+
+export interface DriverUpdatePayload {
+  driver_number?: number;
+  nationality?: string | null;
+  team_since?: string | null;
+  is_active?: boolean;
 }
 
 export interface TeamVehicleItem {
@@ -100,6 +123,7 @@ export interface TeamReport {
       full_name: string;
       email: string;
       nationality?: string | null;
+      team_since?: string | null;
     }>;
     vehicles: Array<{
       vehicle_id: string;
@@ -115,6 +139,7 @@ export interface TeamReport {
       vehicle_engine?: string | null;
       season?: number | null;
       assigned_at: string;
+      unassigned_at?: string | null;
     }>;
   } | null;
 }
@@ -123,6 +148,38 @@ export interface AssignmentCreatePayload {
   driver_id: string;
   vehicle_id: string;
   season?: number;
+}
+
+export interface RacePointsItem {
+  round_number: number;
+  event_name: string;
+  official_event_name?: string | null;
+  event_date?: string | null;
+  is_completed: boolean;
+  race_points: number;
+  cumulative_points: number;
+}
+
+export interface SeasonStats {
+  season: number;
+  total_points: number;
+  avg_finishing_position?: number | null;
+  wins_count: number;
+  podiums_count: number;
+  races_completed: number;
+  total_races: number;
+  is_partial: boolean;
+  race_by_race_points: RacePointsItem[];
+}
+
+export interface SeasonComparisonResponse {
+  team_id: string;
+  team_name: string;
+  season_a: number;
+  season_b: number;
+  available_seasons: number[];
+  stats_a: SeasonStats;
+  stats_b: SeasonStats;
 }
 
 // ── API Fetchers ─────────────────────────────────────────────────────────────
@@ -139,6 +196,23 @@ export async function fetchTeamDrivers(): Promise<TeamDriverItem[]> {
 
 export async function fetchTeamVehicles(): Promise<TeamVehicleItem[]> {
   const { data } = await apiClient.get<TeamVehicleItem[]>("/api/v1/team-manager/vehicles");
+  return data;
+}
+
+export async function fetchVehiclePairingHistory(vehicleId: string): Promise<VehiclePairingHistoryItem[]> {
+  const { data } = await apiClient.get<VehiclePairingHistoryItem[]>(`/api/v1/team-manager/vehicles/${vehicleId}/pairing-history`);
+  return data;
+}
+
+export async function updateTeamDriver({ driverId, payload }: { driverId: string; payload: DriverUpdatePayload }): Promise<TeamDriverItem> {
+  const { data } = await apiClient.patch<TeamDriverItem>(`/api/v1/team-manager/drivers/${driverId}`, payload);
+  return data;
+}
+
+export async function fetchSeasonComparison(seasonA?: number, seasonB?: number): Promise<SeasonComparisonResponse> {
+  const { data } = await apiClient.get<SeasonComparisonResponse>("/api/v1/team-manager/season-comparison", {
+    params: { season_a: seasonA, season_b: seasonB },
+  });
   return data;
 }
 
@@ -190,6 +264,33 @@ export function useTeamVehicles() {
   return useQuery({
     queryKey: ["team-manager-vehicles"],
     queryFn: fetchTeamVehicles,
+  });
+}
+
+export function useVehiclePairingHistory(vehicleId?: string) {
+  return useQuery({
+    queryKey: ["vehicle-pairing-history", vehicleId],
+    queryFn: () => fetchVehiclePairingHistory(vehicleId!),
+    enabled: Boolean(vehicleId),
+  });
+}
+
+export function useUpdateTeamDriver() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateTeamDriver,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["team-manager-drivers"] });
+      queryClient.invalidateQueries({ queryKey: ["team-manager-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["team-manager-vehicles"] });
+    },
+  });
+}
+
+export function useSeasonComparison(seasonA?: number, seasonB?: number) {
+  return useQuery({
+    queryKey: ["season-comparison", seasonA, seasonB],
+    queryFn: () => fetchSeasonComparison(seasonA, seasonB),
   });
 }
 

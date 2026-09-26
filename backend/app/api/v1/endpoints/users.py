@@ -15,10 +15,13 @@ from app.models.driver_vehicle_assignment import DriverVehicleAssignment
 from app.models.role import Role
 from app.models.team import Team
 from app.models.user import User, UserStatus
-from app.schemas.user import UserCreate, UserResponse, UserStatusUpdate, UserUpdate
+from app.schemas.user import BulkUserStatusUpdate, UserCreate, UserResponse, UserStatusUpdate, UserUpdate
+
 from app.services.audit import log_audit_event
 
 router = APIRouter(prefix="/users", tags=["users"])
+admin_users_router = APIRouter(prefix="/admin/users", tags=["admin-users"])
+
 
 
 async def _ensure_driver_profile(db: AsyncSession, user: User, role: Role) -> None:
@@ -242,7 +245,90 @@ async def update_user(
     return updated_res.scalar_one()
 
 
+@router.patch("/bulk-status", response_model=List[UserResponse])
+@admin_users_router.patch("/bulk-status", response_model=List[UserResponse])
+async def bulk_update_user_status(
+    payload: BulkUserStatusUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("users:disable")),
+) -> List[UserResponse]:
+    """
+    Bulk update status for a list of user IDs in one transaction.
+    Writes one AuditLog entry per affected user with action="user_status_bulk_changed".
+    """
+    if not payload.user_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="user_ids list cannot be empty.",
+        )
+
+    unique_ids = list(set(payload.user_ids))
+    new_status = payload.status
+
+    if new_status == UserStatus.DISABLED.value and current_user.user_id in unique_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot disable your own user account.",
+        )
+
+    res = await db.execute(
+        select(User)
+        .options(selectinload(User.role), selectinload(User.team))
+        .where(User.user_id.in_(unique_ids))
+    )
+    users = res.scalars().all()
+
+    if len(users) != len(unique_ids):
+        found_ids = {u.user_id for u in users}
+        missing_ids = [uid for uid in unique_ids if uid not in found_ids]
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User(s) with ID(s) '{missing_ids}' not found.",
+        )
+
+    # Process all in one transaction
+    for user in users:
+        user.status = new_status
+
+        # If user is being disabled, deactivate driver vehicle assignments if any
+        if new_status == UserStatus.DISABLED.value:
+            driver_res = await db.execute(select(Driver).where(Driver.user_id == user.user_id))
+            driver = driver_res.scalar_one_or_none()
+            if driver:
+                active_assign_res = await db.execute(
+                    select(DriverVehicleAssignment).where(
+                        DriverVehicleAssignment.driver_id == driver.driver_id,
+                        DriverVehicleAssignment.status == "active",
+                    )
+                )
+                for a in active_assign_res.scalars().all():
+                    a.status = "inactive"
+
+        # Log ONE audit entry per affected user
+        await log_audit_event(
+            db=db,
+            user_id=current_user.user_id,
+            action="user_status_bulk_changed",
+            entity_type="User",
+            entity_id=user.user_id,
+            details={"new_status": new_status, "bulk": True},
+            request=request,
+        )
+
+    await db.commit()
+
+    # Re-fetch users to return updated list
+    updated_res = await db.execute(
+        select(User)
+        .options(selectinload(User.role), selectinload(User.team))
+        .where(User.user_id.in_(unique_ids))
+    )
+    return updated_res.scalars().all()
+
+
 @router.delete("/{user_id}", response_model=UserResponse)
+
 @router.patch("/{user_id}/status", response_model=UserResponse)
 async def disable_user(
     user_id: str,

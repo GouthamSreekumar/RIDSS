@@ -5,8 +5,12 @@ import {
   Activity,
   AlertCircle,
   AlertTriangle,
+  Calendar,
   Car,
   CheckCircle2,
+  Clock,
+  Edit2,
+  History,
   Plus,
   Trash2,
   UserCheck,
@@ -20,9 +24,52 @@ import {
   useTeamDrivers,
   useTeamVehicles,
   useUnassignDriver,
+  useUpdateTeamDriver,
+  useVehiclePairingHistory,
   type TeamDriverItem,
   type TeamVehicleItem,
+  type VehiclePairingHistoryItem,
 } from "@/features/team-manager/api/teamManagerApi";
+
+// ── Helper to format Tenure from team_since date ─────────────────────────────
+function formatTenure(teamSince?: string | null): { dateStr: string; text: string } {
+  if (!teamSince) {
+    return { dateStr: "Not set", text: "No tenure recorded" };
+  }
+  try {
+    const joinedDate = new Date(teamSince);
+    if (isNaN(joinedDate.getTime())) {
+      return { dateStr: teamSince, text: `Team Manager since ${teamSince}` };
+    }
+    const formattedDate = joinedDate.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+
+    const now = new Date();
+    const diffYears = now.getFullYear() - joinedDate.getFullYear();
+    const diffMonths = now.getMonth() - joinedDate.getMonth() + diffYears * 12;
+
+    let tenureText = "";
+    if (diffMonths < 1) {
+      tenureText = "Joined recently";
+    } else if (diffMonths < 12) {
+      tenureText = `${diffMonths} month${diffMonths > 1 ? "s" : ""} with team`;
+    } else {
+      const yrs = Math.floor(diffMonths / 12);
+      const mos = diffMonths % 12;
+      tenureText = `${yrs} yr${yrs > 1 ? "s" : ""}${mos > 0 ? ` ${mos} mo` : ""} with team`;
+    }
+
+    return {
+      dateStr: formattedDate,
+      text: `Team Manager since ${formattedDate} (${tenureText})`,
+    };
+  } catch {
+    return { dateStr: teamSince, text: `Team Manager since ${teamSince}` };
+  }
+}
 
 // ── Assign Modal Component ───────────────────────────────────────────────────
 function AssignModal({
@@ -149,11 +196,12 @@ function AssignModal({
             >
               <option value="">Choose a team car…</option>
               {vehicles.map((v) => {
-                const healthTag = v.health_status === "critical"
-                  ? " [CRITICAL - BLOCKED]"
-                  : v.health_status === "needs_attention"
-                  ? " [NEEDS ATTENTION]"
-                  : " [GOOD]";
+                const healthTag =
+                  v.health_status === "critical"
+                    ? " [CRITICAL - BLOCKED]"
+                    : v.health_status === "needs_attention"
+                    ? " [NEEDS ATTENTION]"
+                    : " [GOOD]";
                 return (
                   <option key={v.vehicle_id} value={v.vehicle_id}>
                     {v.chassis} ({v.engine}){healthTag} — {v.current_driver ? `(Assigned: #${v.current_driver.driver_number})` : "(Available)"}
@@ -262,6 +310,284 @@ function AssignModal({
   );
 }
 
+// ── Edit Driver / Tenure Modal Component ─────────────────────────────────────
+function EditDriverTenureModal({
+  driver,
+  onClose,
+}: {
+  driver: TeamDriverItem;
+  onClose: () => void;
+}) {
+  const [teamSince, setTeamSince] = useState(driver.team_since ?? "");
+  const [driverNumber, setDriverNumber] = useState(driver.driver_number);
+  const [nationality, setNationality] = useState(driver.nationality ?? "");
+  const [err, setErr] = useState("");
+
+  const updateMutation = useUpdateTeamDriver();
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr("");
+
+    updateMutation.mutate(
+      {
+        driverId: driver.driver_id,
+        payload: {
+          team_since: teamSince || null,
+          driver_number: driverNumber,
+          nationality: nationality || null,
+        },
+      },
+      {
+        onSuccess: () => {
+          onClose();
+        },
+        onError: (error: any) => {
+          setErr(error.response?.data?.detail ?? "Failed to update driver contract / tenure details.");
+        },
+      }
+    );
+  };
+
+  const inputCls =
+    "w-full border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 font-mono focus:outline-none focus:border-ferrari-red transition-colors";
+  const labelCls = "mb-1 block text-xs font-semibold text-slate-400";
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
+    >
+      <motion.div
+        initial={{ scale: 0.98, y: 8 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.98, y: 8 }}
+        className="w-full max-w-md border-2 border-slate-800 bg-slate-950 border-l-2 border-l-cyan-500"
+      >
+        <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3.5 bg-slate-900/60">
+          <div className="flex items-center gap-2">
+            <Clock size={16} className="text-cyan-400" />
+            <h2 className="text-sm font-bold text-slate-100">
+              Contract & Tenure: {driver.full_name}
+            </h2>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300 transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4 p-5 font-sans">
+          <div>
+            <label className={labelCls}>Team Join Date (team_since)</label>
+            <input
+              type="date"
+              className={inputCls}
+              value={teamSince}
+              onChange={(e) => setTeamSince(e.target.value)}
+            />
+            <p className="mt-1 text-[11px] text-slate-500 font-mono">
+              Sets "Team Manager since [date]" tenure displayed across team roster views.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>Driver Number</label>
+              <input
+                type="number"
+                className={inputCls}
+                value={driverNumber}
+                onChange={(e) => setDriverNumber(parseInt(e.target.value, 10) || 0)}
+                required
+              />
+            </div>
+            <div>
+              <label className={labelCls}>Nationality</label>
+              <input
+                type="text"
+                className={inputCls}
+                value={nationality}
+                onChange={(e) => setNationality(e.target.value)}
+                placeholder="e.g. MON, NED, GBR"
+              />
+            </div>
+          </div>
+
+          {err && (
+            <p className="flex items-center gap-1.5 text-xs text-red-400 font-mono">
+              <AlertCircle size={13} /> {err}
+            </p>
+          )}
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 border border-slate-700 bg-slate-900 py-2 text-xs font-mono text-slate-300 hover:bg-slate-800 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={updateMutation.isPending}
+              className="flex-1 border border-cyan-500 bg-cyan-500 py-2 text-xs font-mono font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-40 transition-colors"
+            >
+              {updateMutation.isPending ? "Saving…" : "Save tenure"}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ── In-Context Vehicle History Modal Component ────────────────────────────────
+function VehicleHistoryModal({
+  vehicleId,
+  chassis,
+  onClose,
+}: {
+  vehicleId: string;
+  chassis: string;
+  onClose: () => void;
+}) {
+  const { data: history = [], isLoading, error } = useVehiclePairingHistory(vehicleId);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
+    >
+      <motion.div
+        initial={{ scale: 0.98, y: 8 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.98, y: 8 }}
+        className="w-full max-w-xl border-2 border-slate-800 bg-slate-950 border-l-2 border-l-blue-500"
+      >
+        <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3.5 bg-slate-900/60">
+          <div className="flex items-center gap-2">
+            <History size={16} className="text-blue-400" />
+            <h2 className="text-sm font-bold text-slate-100">
+              In-context pairing timeline: Car {chassis}
+            </h2>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300 transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4 font-sans max-h-[70vh] overflow-y-auto">
+          <p className="text-xs text-slate-400">
+            Dedicated pairing assignment history for vehicle <span className="text-slate-200 font-mono font-semibold">{chassis}</span>. Past records are preserved in system memory.
+          </p>
+
+          {isLoading ? (
+            <div className="flex h-32 items-center justify-center gap-2 text-xs font-mono text-slate-500">
+              <Activity size={16} className="animate-pulse text-blue-400" />
+              <span>Fetching pairing timeline…</span>
+            </div>
+          ) : error ? (
+            <div className="p-3 border border-red-500/40 bg-red-950/20 text-xs text-red-400 font-mono">
+              Failed to load vehicle pairing history.
+            </div>
+          ) : history.length === 0 ? (
+            <div className="flex h-28 flex-col items-center justify-center gap-1.5 text-xs font-mono text-slate-500">
+              <AlertCircle size={16} />
+              <p>No historical driver assignments found for this vehicle.</p>
+            </div>
+          ) : (
+            <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-800">
+              {history.map((item: VehiclePairingHistoryItem) => {
+                const isActive = item.status === "active";
+                const assignedStr = new Date(item.assigned_at).toLocaleString("en-US", {
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
+                const unassignedStr = item.unassigned_at
+                  ? new Date(item.unassigned_at).toLocaleString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  : null;
+
+                return (
+                  <div key={item.assignment_id} className="relative">
+                    {/* Dot on timeline line */}
+                    <div
+                      className={`absolute -left-[19px] top-1 h-3.5 w-3.5 border-2 ${
+                        isActive
+                          ? "border-emerald-400 bg-emerald-950"
+                          : "border-slate-600 bg-slate-900"
+                      }`}
+                    />
+
+                    <div className="border border-slate-800 bg-slate-900/60 p-3.5 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-xs text-slate-100 font-mono">
+                            #{item.driver_number} {item.driver_name}
+                          </span>
+                          {item.season && (
+                            <span className="text-[10px] font-mono text-slate-400 border border-slate-700 bg-slate-800 px-1.5 py-0.5">
+                              Season {item.season}
+                            </span>
+                          )}
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 text-[10px] font-mono font-bold uppercase ${
+                            isActive
+                              ? "border border-emerald-500/40 bg-emerald-950/40 text-emerald-400"
+                              : "border border-slate-700 bg-slate-800 text-slate-400"
+                          }`}
+                        >
+                          {isActive ? "Current Active" : "Past Pairing"}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-[11px] font-mono text-slate-400 pt-1 border-t border-slate-800/60">
+                        <div>
+                          <span className="text-slate-500">Paired:</span> {assignedStr}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Unpaired:</span>{" "}
+                          {isActive ? (
+                            <span className="text-emerald-400 font-semibold">Active / Present</span>
+                          ) : (
+                            unassignedStr ?? "Deactivated"
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-slate-800 p-4 bg-slate-900/60 flex justify-end">
+          <button
+            onClick={onClose}
+            className="border border-slate-700 bg-slate-900 px-4 py-1.5 text-xs font-mono text-slate-300 hover:bg-slate-800 transition-colors"
+          >
+            Close timeline
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ── Unassign Confirmation Dialog ─────────────────────────────────────────────
 function UnassignDialog({
   driverName,
@@ -346,6 +672,12 @@ function UnassignDialog({
 // ── Roster Main Page ─────────────────────────────────────────────────────────
 export default function TeamRosterPage() {
   const [showAssignModal, setShowAssignModal] = useState(false);
+  const [editingDriver, setEditingDriver] = useState<TeamDriverItem | null>(null);
+  const [historyVehicleTarget, setHistoryVehicleTarget] = useState<{
+    id: string;
+    chassis: string;
+  } | null>(null);
+
   const [unassignTarget, setUnassignTarget] = useState<{
     driverName: string;
     vehicleChassis: string;
@@ -368,7 +700,7 @@ export default function TeamRosterPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-100">Roster & driver-vehicle pairings</h1>
           <p className="mt-1 text-xs text-slate-400">
-            Assign team drivers to garage vehicles. Enforces one active pairing per driver and car.
+            Manage active driver pairings, tenure contract dates, and vehicle assignment histories.
           </p>
         </div>
         <button
@@ -446,6 +778,7 @@ export default function TeamRosterPage() {
                   <thead>
                     <tr className="border-b border-slate-800 bg-slate-950 text-xs font-semibold text-slate-400">
                       <th className="py-3 px-5">Driver</th>
+                      <th className="py-3 px-5">Tenure / Contract</th>
                       <th className="py-3 px-5">Assigned vehicle</th>
                       <th className="py-3 px-5">Engine</th>
                       <th className="py-3 px-5">Status</th>
@@ -453,46 +786,62 @@ export default function TeamRosterPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/80 text-xs">
-                    {activePairings.map((driver) => (
-                      <tr key={driver.driver_id} className="hover:bg-slate-900/60 transition-colors">
-                        <td className="py-3.5 px-5">
-                          <div className="flex items-center gap-2.5">
-                            <span className="flex h-7 w-7 items-center justify-center border border-ferrari-red/40 bg-ferrari-red/10 text-xs font-mono font-bold text-ferrari-red">
-                              #{driver.driver_number}
-                            </span>
-                            <div>
-                              <p className="font-semibold text-slate-100">{driver.full_name}</p>
-                              <p className="text-[11px] text-slate-500 font-mono">{driver.email}</p>
+                    {activePairings.map((driver) => {
+                      const tenureInfo = formatTenure(driver.team_since);
+                      return (
+                        <tr key={driver.driver_id} className="hover:bg-slate-900/60 transition-colors">
+                          <td className="py-3.5 px-5">
+                            <div className="flex items-center gap-2.5">
+                              <span className="flex h-7 w-7 items-center justify-center border border-ferrari-red/40 bg-ferrari-red/10 text-xs font-mono font-bold text-ferrari-red">
+                                #{driver.driver_number}
+                              </span>
+                              <div>
+                                <p className="font-semibold text-slate-100">{driver.full_name}</p>
+                                <p className="text-[11px] text-slate-500 font-mono">{driver.email}</p>
+                              </div>
                             </div>
-                          </div>
-                        </td>
-                        <td className="py-3.5 px-5 font-mono text-slate-200">
-                          {driver.current_vehicle?.chassis}
-                        </td>
-                        <td className="py-3.5 px-5 text-slate-400 font-mono">
-                          {driver.current_vehicle?.engine}
-                        </td>
-                        <td className="py-3.5 px-5">
-                          <span className="border border-emerald-500/40 bg-emerald-950/40 px-2 py-0.5 text-[11px] font-mono font-bold text-emerald-400 inline-flex items-center gap-1">
-                            <CheckCircle2 size={11} /> Active pairing
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-5 text-right">
-                          <button
-                            onClick={() =>
-                              setUnassignTarget({
-                                driverName: driver.full_name,
-                                vehicleChassis: driver.current_vehicle?.chassis ?? "Car",
-                                assignmentId: driver.current_assignment_id!,
-                              })
-                            }
-                            className="inline-flex items-center gap-1 border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] font-mono text-slate-300 hover:border-red-500/40 hover:text-red-400 transition-colors"
-                          >
-                            <Trash2 size={11} /> Unassign
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+                          <td className="py-3.5 px-5 font-mono text-slate-300">
+                            <div className="flex items-center gap-1.5">
+                              <Clock size={12} className="text-cyan-400 shrink-0" />
+                              <span className="text-[11px]">{tenureInfo.text}</span>
+                              <button
+                                onClick={() => setEditingDriver(driver)}
+                                className="ml-1 text-slate-500 hover:text-cyan-400 transition-colors"
+                                title="Edit driver tenure"
+                              >
+                                <Edit2 size={11} />
+                              </button>
+                            </div>
+                          </td>
+                          <td className="py-3.5 px-5 font-mono text-slate-200">
+                            {driver.current_vehicle?.chassis}
+                          </td>
+                          <td className="py-3.5 px-5 text-slate-400 font-mono">
+                            {driver.current_vehicle?.engine}
+                          </td>
+                          <td className="py-3.5 px-5">
+                            <span className="border border-emerald-500/40 bg-emerald-950/40 px-2 py-0.5 text-[11px] font-mono font-bold text-emerald-400 inline-flex items-center gap-1">
+                              <CheckCircle2 size={11} /> Active pairing
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right">
+                            <button
+                              onClick={() =>
+                                setUnassignTarget({
+                                  driverName: driver.full_name,
+                                  vehicleChassis: driver.current_vehicle?.chassis ?? "Car",
+                                  assignmentId: driver.current_assignment_id!,
+                                })
+                              }
+                              className="inline-flex items-center gap-1 border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] font-mono text-slate-300 hover:border-red-500/40 hover:text-red-400 transition-colors"
+                            >
+                              <Trash2 size={11} /> Unassign
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -507,55 +856,71 @@ export default function TeamRosterPage() {
                 <div className="flex items-center gap-2">
                   <Users size={16} className="text-cyan-400" />
                   <h3 className="text-sm font-bold text-slate-200">
-                    Team drivers ({drivers.length})
+                    Team drivers roster ({drivers.length})
                   </h3>
                 </div>
               </div>
-              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
                 {drivers.map((d) => {
                   const isPaired = Boolean(d.current_vehicle);
+                  const tenureInfo = formatTenure(d.team_since);
+
                   return (
                     <div
                       key={d.driver_id}
-                      className={`flex items-center justify-between p-3 border border-slate-800 bg-slate-900/60 border-l-2 ${
+                      className={`flex flex-col sm:flex-row sm:items-center justify-between p-3 border border-slate-800 bg-slate-900/60 border-l-2 gap-2 ${
                         isPaired ? "border-l-emerald-500" : "border-l-amber"
                       }`}
                     >
                       <div className="flex items-center gap-2.5">
-                        <span className="flex h-6 w-6 items-center justify-center border border-slate-700 bg-slate-800 text-xs font-mono font-bold text-slate-200">
+                        <span className="flex h-7 w-7 items-center justify-center border border-slate-700 bg-slate-800 text-xs font-mono font-bold text-slate-200 shrink-0">
                           #{d.driver_number}
                         </span>
                         <div>
-                          <p className="text-xs font-semibold text-slate-100">{d.full_name}</p>
-                          <p className="text-[11px] text-slate-500">{d.nationality ?? "Driver"}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-semibold text-slate-100">{d.full_name}</p>
+                            <button
+                              onClick={() => setEditingDriver(d)}
+                              className="text-slate-500 hover:text-cyan-400 transition-colors"
+                              title="Edit driver tenure"
+                            >
+                              <Edit2 size={11} />
+                            </button>
+                          </div>
+                          <p className="text-[11px] text-slate-400 font-mono">
+                            {tenureInfo.text}
+                          </p>
                         </div>
                       </div>
-                      {isPaired ? (
-                        <span className="border border-emerald-500/30 bg-emerald-950/30 px-2 py-0.5 text-[10px] font-mono text-emerald-400">
-                          {d.current_vehicle?.chassis}
-                        </span>
-                      ) : (
-                        <span className="border border-amber/30 bg-amber/10 px-2 py-0.5 text-[10px] font-mono text-amber">
-                          Unpaired
-                        </span>
-                      )}
+
+                      <div className="flex items-center gap-2 self-end sm:self-center">
+                        {isPaired ? (
+                          <span className="border border-emerald-500/30 bg-emerald-950/30 px-2 py-0.5 text-[10px] font-mono text-emerald-400">
+                            {d.current_vehicle?.chassis}
+                          </span>
+                        ) : (
+                          <span className="border border-amber/30 bg-amber/10 px-2 py-0.5 text-[10px] font-mono text-amber">
+                            Unpaired
+                          </span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            {/* Vehicles Inventory */}
+            {/* Vehicles Inventory & In-Context Pairing History */}
             <div className="border border-slate-800 bg-slate-surface p-5">
               <div className="mb-3 flex items-center justify-between border-b border-slate-800/80 pb-2.5">
                 <div className="flex items-center gap-2">
                   <Car size={16} className="text-blue-400" />
                   <h3 className="text-sm font-bold text-slate-200">
-                    Garage vehicles ({vehicles.length})
+                    Garage vehicles & history ({vehicles.length})
                   </h3>
                 </div>
               </div>
-              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
                 {vehicles.map((v) => {
                   const isAssigned = Boolean(v.current_driver);
                   const isCritical = v.health_status === "critical";
@@ -564,7 +929,7 @@ export default function TeamRosterPage() {
                   return (
                     <div
                       key={v.vehicle_id}
-                      className={`flex items-center justify-between p-3 border border-slate-800 bg-slate-900/60 border-l-2 ${
+                      className={`flex flex-col sm:flex-row sm:items-center justify-between p-3 border border-slate-800 bg-slate-900/60 border-l-2 gap-2 ${
                         isCritical
                           ? "border-l-red-500"
                           : isAttention
@@ -591,15 +956,26 @@ export default function TeamRosterPage() {
                         </div>
                         <p className="text-[11px] text-slate-500 font-mono">{v.engine}</p>
                       </div>
-                      {isAssigned ? (
-                        <span className="border border-emerald-500/30 bg-emerald-950/30 px-2 py-0.5 text-[10px] font-mono text-emerald-400">
-                          #{v.current_driver?.driver_number} {v.current_driver?.full_name}
-                        </span>
-                      ) : (
-                        <span className="border border-amber/30 bg-amber/10 px-2 py-0.5 text-[10px] font-mono text-amber">
-                          Unassigned
-                        </span>
-                      )}
+
+                      <div className="flex items-center gap-2 self-end sm:self-center">
+                        <button
+                          onClick={() => setHistoryVehicleTarget({ id: v.vehicle_id, chassis: v.chassis })}
+                          className="inline-flex items-center gap-1 border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] font-mono text-slate-300 hover:border-blue-500/40 hover:text-blue-400 transition-colors"
+                          title="View vehicle pairing timeline history"
+                        >
+                          <History size={11} /> History
+                        </button>
+
+                        {isAssigned ? (
+                          <span className="border border-emerald-500/30 bg-emerald-950/30 px-2 py-0.5 text-[10px] font-mono text-emerald-400">
+                            #{v.current_driver?.driver_number} {v.current_driver?.full_name}
+                          </span>
+                        ) : (
+                          <span className="border border-amber/30 bg-amber/10 px-2 py-0.5 text-[10px] font-mono text-amber">
+                            Unassigned
+                          </span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -609,7 +985,7 @@ export default function TeamRosterPage() {
         </div>
       )}
 
-      {/* Assign Modal */}
+      {/* Assign Driver Modal */}
       <AnimatePresence>
         {showAssignModal && (
           <AssignModal
@@ -620,7 +996,28 @@ export default function TeamRosterPage() {
         )}
       </AnimatePresence>
 
-      {/* Unassign Dialog */}
+      {/* Edit Driver Tenure Modal */}
+      <AnimatePresence>
+        {editingDriver && (
+          <EditDriverTenureModal
+            driver={editingDriver}
+            onClose={() => setEditingDriver(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* In-Context Vehicle History Modal */}
+      <AnimatePresence>
+        {historyVehicleTarget && (
+          <VehicleHistoryModal
+            vehicleId={historyVehicleTarget.id}
+            chassis={historyVehicleTarget.chassis}
+            onClose={() => setHistoryVehicleTarget(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Unassign Pairing Dialog */}
       <AnimatePresence>
         {unassignTarget && (
           <UnassignDialog

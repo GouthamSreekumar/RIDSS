@@ -12,6 +12,7 @@ import {
   FileText,
   LayoutDashboard,
   LogOut,
+  TrendingUp,
   Users,
 } from "lucide-react";
 import Link from "next/link";
@@ -23,6 +24,7 @@ import { NotificationIndicator } from "@/components/notifications/NotificationIn
 
 const NAV_ITEMS = [
   { href: "/team-manager", label: "Dashboard", icon: LayoutDashboard, exact: true },
+  { href: "/team-manager/season-comparison", label: "Season Comparison", icon: TrendingUp, exact: false },
   { href: "/team-manager/calendar", label: "Race Calendar", icon: Calendar, exact: false },
   { href: "/team-manager/roster", label: "Roster & Pairings", icon: Users, exact: false },
   { href: "/team-manager/reports", label: "Team Reports", icon: FileText, exact: false },

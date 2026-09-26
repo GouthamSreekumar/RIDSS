@@ -17,6 +17,7 @@ from app.schemas.role import (
     ModulePermissionsResponse,
     PermissionResponse,
     RoleCreate,
+    RoleDuplicateRequest,
     RoleMatrixEntry,
     RoleMatrixResponse,
     RolePermissionDetailResponse,
@@ -26,7 +27,9 @@ from app.schemas.role import (
 from app.services.audit import log_audit_event
 
 roles_router = APIRouter(prefix="/roles", tags=["roles"])
+admin_roles_router = APIRouter(prefix="/admin/roles", tags=["admin-roles"])
 permissions_router = APIRouter(prefix="/permissions", tags=["permissions"])
+
 
 
 # ── Permissions List Endpoint ──────────────────────────────────────────────
@@ -96,6 +99,91 @@ async def create_role(
     await rbac_cache.invalidate(db)
 
     return new_role
+
+
+@roles_router.post("/{role_id}/duplicate", response_model=RoleMatrixEntry, status_code=status.HTTP_201_CREATED)
+@admin_roles_router.post("/{role_id}/duplicate", response_model=RoleMatrixEntry, status_code=status.HTTP_201_CREATED)
+async def duplicate_role(
+    role_id: str,
+    dup_in: RoleDuplicateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("roles:create")),
+) -> RoleMatrixEntry:
+    """
+    Duplicate an existing role as a starting template.
+    Copies all RolePermission rows from source role to the new role.
+    Audit action logged as "role_duplicated".
+    """
+    source_res = await db.execute(select(Role).where(Role.role_id == role_id))
+    source_role = source_res.scalar_one_or_none()
+    if not source_role:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source role with ID '{role_id}' not found.",
+        )
+
+    # Verify new role name is unique
+    existing_res = await db.execute(select(Role).where(Role.role_name == dup_in.new_role_name))
+    if existing_res.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Role with name '{dup_in.new_role_name}' already exists.",
+        )
+
+    # 1. Create new role
+    new_role = Role(
+        role_name=dup_in.new_role_name,
+        description=dup_in.description or f"Copy of {source_role.role_name}",
+    )
+    db.add(new_role)
+    await db.flush()
+
+    # 2. Copy source role permissions
+    rp_res = await db.execute(
+        select(RolePermission)
+        .options(selectinload(RolePermission.permission))
+        .where(RolePermission.role_id == source_role.role_id)
+    )
+    source_rps = rp_res.scalars().all()
+
+    copied_perm_ids = []
+    copied_perm_keys = []
+    for rp in source_rps:
+        db.add(RolePermission(role_id=new_role.role_id, permission_id=rp.permission_id))
+        copied_perm_ids.append(rp.permission_id)
+        if rp.permission:
+            copied_perm_keys.append(rp.permission.permission_key)
+
+    # 3. Log audit entry for duplication
+    await log_audit_event(
+        db=db,
+        user_id=current_user.user_id,
+        action="role_duplicated",
+        entity_type="Role",
+        entity_id=new_role.role_id,
+        details={
+            "source_role_id": source_role.role_id,
+            "source_role_name": source_role.role_name,
+            "new_role_name": new_role.role_name,
+            "copied_permissions_count": len(copied_perm_ids),
+        },
+        request=request,
+    )
+
+    await db.commit()
+
+    # Invalidate RBAC cache
+    await rbac_cache.invalidate(db)
+
+    return RoleMatrixEntry(
+        role_id=new_role.role_id,
+        role_name=new_role.role_name,
+        description=new_role.description,
+        permission_ids=copied_perm_ids,
+        permission_keys=copied_perm_keys,
+    )
+
 
 
 @roles_router.get("", response_model=List[RoleResponse])

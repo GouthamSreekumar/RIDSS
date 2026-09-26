@@ -2,7 +2,8 @@
 Pydantic v2 schemas for User management.
 """
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
@@ -24,6 +25,12 @@ class UserUpdate(BaseModel):
 
 class UserStatusUpdate(BaseModel):
     status: str = Field(..., pattern="^(active|disabled)$")
+
+
+class BulkUserStatusUpdate(BaseModel):
+    user_ids: List[str] = Field(..., min_length=1)
+    status: str = Field(..., pattern="^(active|disabled)$")
+
 
 
 class UserRoleResponse(BaseModel):

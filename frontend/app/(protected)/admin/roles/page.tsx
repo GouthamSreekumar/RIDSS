@@ -2,12 +2,13 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Activity, AlertCircle, CheckSquare, Plus, Shield, Square, X } from "lucide-react";
+import { Activity, AlertCircle, CheckSquare, Copy, Plus, Shield, Square, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
-  createRole, fetchRoleMatrix, updateRolePermissions,
+  createRole, duplicateRole, fetchRoleMatrix, updateRolePermissions,
   type Permission, type RoleMatrixEntry,
 } from "@/features/admin/api/adminApi";
+
 
 // ── Role column header ─────────────────────────────────────────────────────────
 
@@ -81,14 +82,90 @@ function CreateRoleModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+function DuplicateRoleModal({
+  sourceRole,
+  onClose,
+}: {
+  sourceRole: RoleMatrixEntry;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [newRoleName, setNewRoleName] = useState(`${sourceRole.role_name} (Copy)`);
+  const [description, setDescription] = useState(
+    sourceRole.description ? `Copy of ${sourceRole.role_name} — ${sourceRole.description}` : `Copy of ${sourceRole.role_name}`
+  );
+  const [err, setErr] = useState("");
+
+  const mutation = useMutation({
+    mutationFn: () => duplicateRole(sourceRole.role_id, { new_role_name: newRoleName, description }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-role-matrix"] });
+      onClose();
+    },
+    onError: (e: Error & { response?: { data?: { detail?: string } } }) => {
+      setErr(e.response?.data?.detail ?? "Failed to duplicate role.");
+    },
+  });
+
+  const inputCls = "w-full rounded-lg border border-slate-700 bg-graphite-800 px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-ferrari-red focus:border-transparent transition-all";
+  const labelCls = "mb-1.5 block text-xs font-semibold uppercase tracking-widest text-slate-500";
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+    >
+      <motion.div
+        initial={{ scale: 0.95, y: 16 }} animate={{ scale: 1, y: 0 }}
+        className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-surface shadow-2xl"
+      >
+        <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+          <div>
+            <h2 className="text-sm font-bold text-slate-100">Duplicate Role Template</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Source: {sourceRole.role_name} ({sourceRole.permission_ids.length} perms)</p>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X size={18} /></button>
+        </div>
+        <form onSubmit={e => { e.preventDefault(); mutation.mutate(); }} className="space-y-4 p-6">
+          <div>
+            <label className={labelCls}>New Role Name</label>
+            <input className={inputCls} placeholder="e.g. Junior Race Engineer" value={newRoleName}
+              onChange={e => setNewRoleName(e.target.value)} required />
+          </div>
+          <div>
+            <label className={labelCls}>Description <span className="text-slate-600 normal-case tracking-normal">(optional)</span></label>
+            <textarea className={inputCls + " resize-none"} rows={2} placeholder="Brief description…"
+              value={description} onChange={e => setDescription(e.target.value)} />
+          </div>
+          <div className="text-xs text-slate-400 bg-graphite-800 p-3 rounded-lg border border-slate-800">
+            <p className="font-semibold text-slate-300 mb-1">Pre-filled Permission Matrix:</p>
+            <p>Creates a brand-new role populated with all {sourceRole.permission_ids.length} permissions from {sourceRole.role_name} as a starting point. Opens immediately for editing.</p>
+          </div>
+          {err && <p className="flex items-center gap-2 text-xs text-red-400"><AlertCircle size={12} /> {err}</p>}
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose}
+              className="flex-1 rounded-lg border border-slate-700 py-2.5 text-sm text-slate-400 hover:text-slate-200 transition-all">Cancel</button>
+            <button type="submit" disabled={mutation.isPending}
+              className="flex-1 rounded-lg bg-ferrari-red py-2.5 text-sm font-semibold text-white hover:bg-ferrari-red/90 disabled:opacity-60 transition-all flex items-center justify-center gap-1.5">
+              <Copy size={14} />
+              {mutation.isPending ? "Duplicating…" : "Duplicate Role"}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ── Permission Matrix ──────────────────────────────────────────────────────────
 
 function PermissionMatrix({
-  roles, modules, onSave, saving,
+  roles, modules, onSave, onDuplicate, saving,
 }: {
   roles: RoleMatrixEntry[];
   modules: Record<string, Permission[]>;
   onSave: (roleId: string, permIds: string[]) => void;
+  onDuplicate: (role: RoleMatrixEntry) => void;
   saving: string | null;
 }) {
   // Local state: roleId → Set of permission_ids
@@ -134,9 +211,18 @@ function PermissionMatrix({
               Permission
             </th>
             {roles.map(role => (
-              <th key={role.role_id} className="py-3 px-3 text-center min-w-[110px]">
+              <th key={role.role_id} className="py-3 px-3 text-center min-w-[120px]">
                 <div className={`inline-flex rounded-lg border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${ROLE_COLORS[role.role_name] ?? "text-slate-400 border-slate-700"}`}>
                   {role.role_name}
+                </div>
+                <div className="mt-1 flex items-center justify-center gap-1">
+                  <button
+                    onClick={() => onDuplicate(role)}
+                    className="rounded-md bg-graphite-800 border border-slate-700/80 px-2 py-0.5 text-[9px] font-semibold text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-all flex items-center gap-1"
+                    title={`Duplicate '${role.role_name}' permissions into a new role`}
+                  >
+                    <Copy size={9} /> Duplicate
+                  </button>
                 </div>
                 {isDirty(role.role_id) && (
                   <div className="mt-1">
@@ -192,10 +278,12 @@ function PermissionMatrix({
   );
 }
 
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function RolesPage() {
   const [showCreate, setShowCreate] = useState(false);
+  const [duplicateSourceRole, setDuplicateSourceRole] = useState<RoleMatrixEntry | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -240,7 +328,7 @@ export default function RolesPage() {
       <div className="flex items-center gap-4 rounded-lg border border-slate-800 bg-slate-surface px-4 py-3">
         <Shield size={14} className="text-slate-500 shrink-0" />
         <p className="text-xs text-slate-500">
-          Toggle checkboxes to change permissions per role. A <span className="font-semibold text-ferrari-red">Save</span> button appears above each column with unsaved changes.
+          Toggle checkboxes to change permissions per role. Click <span className="font-semibold text-slate-300">Duplicate</span> under any role header to create a new role template starting from its permissions.
         </p>
       </div>
 
@@ -258,11 +346,20 @@ export default function RolesPage() {
           roles={matrix.roles}
           modules={matrix.modules}
           onSave={(roleId, permIds) => saveMutation.mutate({ roleId, permIds })}
+          onDuplicate={(role) => setDuplicateSourceRole(role)}
           saving={saving}
         />
       )}
 
       {showCreate && <CreateRoleModal onClose={() => setShowCreate(false)} />}
+
+      {duplicateSourceRole && (
+        <DuplicateRoleModal
+          sourceRole={duplicateSourceRole}
+          onClose={() => setDuplicateSourceRole(null)}
+        />
+      )}
     </div>
   );
 }
+

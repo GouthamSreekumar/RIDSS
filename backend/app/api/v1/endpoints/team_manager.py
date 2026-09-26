@@ -26,14 +26,19 @@ from app.schemas.team_manager import (
     AssignmentCreate,
     CalendarDriverResult,
     DriverSummary,
+    DriverUpdateSchema,
     DriverVehicleAssignmentResponse,
     RaceCalendarEvent,
+    RacePointsItem,
     RecentActivityItem,
+    SeasonComparisonResponse,
+    SeasonStats,
     TeamDashboardSummary,
     TeamDriverItem,
     TeamManagerCalendarResponse,
     TeamReportResponse,
     TeamVehicleItem,
+    VehiclePairingHistoryItem,
     VehicleSummary,
 )
 from app.services.audit import log_audit_event
@@ -45,7 +50,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/team-manager", tags=["team-manager"])
 
 
-
 def _ensure_manager_team(user: User) -> str:
     """Helper to ensure current user has an assigned team_id."""
     if not user.team_id:
@@ -54,6 +58,74 @@ def _ensure_manager_team(user: User) -> str:
             detail="User is not assigned to any team. Contact an Administrator.",
         )
     return user.team_id
+
+
+def _compute_season_stats(season: int, events: List[Dict[str, Any]]) -> SeasonStats:
+    """Helper to compute season stats and race-by-race cumulative points progression."""
+    race_by_race: List[RacePointsItem] = []
+    running_points = 0.0
+    wins_count = 0
+    podiums_count = 0
+    positions: List[int] = []
+    races_completed = 0
+
+    for ev in events:
+        is_completed = ev.get("is_completed", False)
+        driver_results = ev.get("driver_results", [])
+
+        race_pts = 0.0
+        for res in driver_results:
+            pts = res.get("points")
+            if pts is not None:
+                try:
+                    race_pts += float(pts)
+                except (ValueError, TypeError):
+                    pass
+
+            if is_completed:
+                pos = res.get("position")
+                if pos is not None:
+                    try:
+                        pos_num = int(pos)
+                        positions.append(pos_num)
+                        if pos_num == 1:
+                            wins_count += 1
+                        if 1 <= pos_num <= 3:
+                            podiums_count += 1
+                    except (ValueError, TypeError):
+                        pass
+
+        if is_completed:
+            races_completed += 1
+            running_points += race_pts
+
+        race_by_race.append(
+            RacePointsItem(
+                round_number=ev.get("round_number", 0),
+                event_name=ev.get("event_name", "Unknown Event"),
+                official_event_name=ev.get("official_event_name"),
+                event_date=ev.get("event_date"),
+                is_completed=is_completed,
+                race_points=round(race_pts, 1),
+                cumulative_points=round(running_points, 1),
+            )
+        )
+
+    total_races = len(events)
+    avg_pos = round(sum(positions) / len(positions), 1) if positions else None
+    is_partial = races_completed < total_races
+
+    return SeasonStats(
+        season=season,
+        total_points=round(running_points, 1),
+        avg_finishing_position=avg_pos,
+        wins_count=wins_count,
+        podiums_count=podiums_count,
+        races_completed=races_completed,
+        total_races=total_races,
+        is_partial=is_partial,
+        race_by_race_points=race_by_race,
+    )
 
 
 # ── 1. Dashboard Endpoint ──────────────────────────────────────────────────────
@@ -148,7 +220,7 @@ async def get_team_dashboard(
     )
 
 
-# ── 2. Team Drivers Endpoint ──────────────────────────────────────────────────
+# ── 2. Team Drivers Endpoints ──────────────────────────────────────────────────
 @router.get("/drivers", response_model=List[TeamDriverItem])
 async def get_team_drivers(
     include_departed: bool = Query(False, description="Include departed / inactive team drivers"),
@@ -169,7 +241,6 @@ async def get_team_drivers(
         query = query.where(User.status == "active", Driver.is_active == True)
 
     result = await db.execute(query)
-
     drivers = result.scalars().all()
 
     # Query Active Assignments for this team
@@ -208,6 +279,8 @@ async def get_team_drivers(
                 nationality=d.nationality,
                 full_name=d.user.full_name if d.user else "Unknown",
                 email=d.user.email if d.user else "",
+                team_since=d.team_since,
+                is_active=d.is_active,
                 current_vehicle=current_vehicle,
                 current_assignment_id=current_assignment_id,
             )
@@ -216,7 +289,96 @@ async def get_team_drivers(
     return driver_items
 
 
-# ── 3. Team Vehicles Endpoint ──────────────────────────────────────────────────
+@router.patch("/drivers/{driver_id}", response_model=TeamDriverItem)
+async def update_team_driver(
+    driver_id: str,
+    payload: DriverUpdateSchema,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("teams:assign_driver")),
+) -> TeamDriverItem:
+    team_id = _ensure_manager_team(current_user)
+
+    result = await db.execute(
+        select(Driver)
+        .options(selectinload(Driver.user))
+        .join(User)
+        .where(Driver.driver_id == driver_id, User.team_id == team_id)
+    )
+    driver = result.scalar_one_or_none()
+    if not driver:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Driver not found or does not belong to your team.",
+        )
+
+    if payload.driver_number is not None:
+        driver.driver_number = payload.driver_number
+    if payload.nationality is not None:
+        driver.nationality = payload.nationality
+    if payload.team_since is not None:
+        driver.team_since = payload.team_since
+    if payload.is_active is not None:
+        driver.is_active = payload.is_active
+
+    await log_audit_event(
+        db=db,
+        user_id=current_user.user_id,
+        action="driver_updated",
+        entity_type="Driver",
+        entity_id=driver.driver_id,
+        details={
+            "driver_id": driver.driver_id,
+            "driver_name": driver.user.full_name if driver.user else None,
+            "team_since": str(driver.team_since) if driver.team_since else None,
+            "driver_number": driver.driver_number,
+            "is_active": driver.is_active,
+        },
+        request=request,
+    )
+
+    await db.commit()
+    await db.refresh(driver)
+
+    # Fetch active assignment if any
+    assignment_res = await db.execute(
+        select(DriverVehicleAssignment)
+        .options(selectinload(DriverVehicleAssignment.vehicle))
+        .where(
+            DriverVehicleAssignment.driver_id == driver.driver_id,
+            DriverVehicleAssignment.status == "active",
+        )
+    )
+    active_assignment = assignment_res.scalar_one_or_none()
+    current_vehicle = None
+    current_assignment_id = None
+    if active_assignment and active_assignment.vehicle:
+        v = active_assignment.vehicle
+        v_health = await get_vehicle_health(db, v.vehicle_id)
+        current_vehicle = VehicleSummary(
+            vehicle_id=v.vehicle_id,
+            chassis=v.chassis,
+            engine=v.engine,
+            status=v.status,
+            health_status=v_health["health_status"],
+        )
+        current_assignment_id = active_assignment.assignment_id
+
+    return TeamDriverItem(
+        driver_id=driver.driver_id,
+        user_id=driver.user_id,
+        driver_number=driver.driver_number,
+        nationality=driver.nationality,
+        full_name=driver.user.full_name if driver.user else "Unknown",
+        email=driver.user.email if driver.user else "",
+        team_since=driver.team_since,
+        is_active=driver.is_active,
+        current_vehicle=current_vehicle,
+        current_assignment_id=current_assignment_id,
+    )
+
+
+# ── 3. Team Vehicles Endpoints ──────────────────────────────────────────────────
 @router.get("/vehicles", response_model=List[TeamVehicleItem])
 async def get_team_vehicles(
     db: AsyncSession = Depends(get_db),
@@ -254,6 +416,7 @@ async def get_team_vehicles(
                 user_id=d.user_id,
                 driver_number=d.driver_number,
                 nationality=d.nationality,
+                team_since=d.team_since,
                 full_name=d.user.full_name if d.user else "Unknown",
             )
             current_assignment_id = assignment.assignment_id
@@ -272,6 +435,64 @@ async def get_team_vehicles(
         )
 
     return vehicle_items
+
+
+@router.get("/vehicles/{vehicle_id}/pairing-history", response_model=List[VehiclePairingHistoryItem])
+async def get_vehicle_pairing_history(
+    vehicle_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("teams:read")),
+) -> List[VehiclePairingHistoryItem]:
+    """Returns all assignment records (active and inactive) for a specific vehicle ordered most recent first."""
+    team_id = _ensure_manager_team(current_user)
+
+    v_res = await db.execute(select(Vehicle).where(Vehicle.vehicle_id == vehicle_id, Vehicle.team_id == team_id))
+    vehicle = v_res.scalar_one_or_none()
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found or does not belong to your team.",
+        )
+
+    query = (
+        select(DriverVehicleAssignment)
+        .options(
+            selectinload(DriverVehicleAssignment.driver).selectinload(Driver.user)
+        )
+        .where(
+            DriverVehicleAssignment.vehicle_id == vehicle_id,
+            DriverVehicleAssignment.team_id == team_id,
+        )
+        .order_by(DriverVehicleAssignment.assigned_at.desc())
+    )
+
+    result = await db.execute(query)
+    assignments = result.scalars().all()
+
+    history: List[VehiclePairingHistoryItem] = []
+    for a in assignments:
+        driver_name = "Unknown Driver"
+        driver_num = 0
+        if a.driver:
+            driver_num = a.driver.driver_number
+            if a.driver.user:
+                driver_name = a.driver.user.full_name
+
+        history.append(
+            VehiclePairingHistoryItem(
+                assignment_id=a.assignment_id,
+                vehicle_id=a.vehicle_id,
+                driver_id=a.driver_id,
+                driver_name=driver_name,
+                driver_number=driver_num,
+                assigned_at=a.assigned_at,
+                unassigned_at=a.unassigned_at,
+                status=a.status,
+                season=a.season,
+            )
+        )
+
+    return history
 
 
 # ── 4. Create Driver-Vehicle Assignment ─────────────────────────────────────────
@@ -321,6 +542,8 @@ async def assign_driver_to_vehicle(
             detail=f"Vehicle '{vehicle.chassis}' cannot be assigned to a driver because its health status is CRITICAL due to component(s): {crit_list}. Complete required maintenance before assignment.",
         )
 
+    now_utc = datetime.now(timezone.utc)
+
     # 3. Deactivate any existing active assignments for this driver or vehicle
     existing_res = await db.execute(
         select(DriverVehicleAssignment).where(
@@ -335,6 +558,7 @@ async def assign_driver_to_vehicle(
     existing_assignments = existing_res.scalars().all()
     for existing in existing_assignments:
         existing.status = "inactive"
+        existing.unassigned_at = now_utc
 
     # 4. Create new active assignment
     new_assignment = DriverVehicleAssignment(
@@ -343,7 +567,7 @@ async def assign_driver_to_vehicle(
         vehicle_id=payload.vehicle_id,
         season=payload.season or 2026,
         status="active",
-        assigned_at=datetime.now(timezone.utc),
+        assigned_at=now_utc,
     )
     db.add(new_assignment)
     await db.flush()
@@ -374,7 +598,7 @@ async def assign_driver_to_vehicle(
         status="unread",
         reference_type="assignment",
         reference_id=new_assignment.assignment_id,
-        created_at=datetime.now(timezone.utc),
+        created_at=now_utc,
     )
     db.add(notification)
 
@@ -388,6 +612,7 @@ async def assign_driver_to_vehicle(
         vehicle_id=new_assignment.vehicle_id,
         status=new_assignment.status,
         assigned_at=new_assignment.assigned_at,
+        unassigned_at=new_assignment.unassigned_at,
         season=new_assignment.season,
         driver=DriverSummary(
             driver_id=driver.driver_id,
@@ -395,6 +620,7 @@ async def assign_driver_to_vehicle(
             driver_number=driver.driver_number,
             full_name=driver.user.full_name,
             nationality=driver.nationality,
+            team_since=driver.team_since,
         ),
         vehicle=VehicleSummary(
             vehicle_id=vehicle.vehicle_id,
@@ -433,7 +659,9 @@ async def unassign_driver(
             detail="Assignment not found or does not belong to your team.",
         )
 
+    now_utc = datetime.now(timezone.utc)
     assignment.status = "inactive"
+    assignment.unassigned_at = now_utc
 
     # Log to shared AuditLog
     await log_audit_event(
@@ -461,7 +689,7 @@ async def unassign_driver(
             status="unread",
             reference_type="assignment",
             reference_id=assignment.assignment_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=now_utc,
         )
         db.add(notification)
 
@@ -506,6 +734,7 @@ async def list_assignments(
                 driver_number=a.driver.driver_number,
                 full_name=a.driver.user.full_name if a.driver.user else "Unknown",
                 nationality=a.driver.nationality,
+                team_since=a.driver.team_since,
             )
         v_summary = None
         if a.vehicle:
@@ -523,6 +752,7 @@ async def list_assignments(
                 vehicle_id=a.vehicle_id,
                 status=a.status,
                 assigned_at=a.assigned_at,
+                unassigned_at=a.unassigned_at,
                 season=a.season,
                 driver=d_summary,
                 vehicle=v_summary,
@@ -596,6 +826,7 @@ async def generate_team_report(
                 "full_name": d.user.full_name if d.user else "Unknown",
                 "email": d.user.email if d.user else "",
                 "nationality": d.nationality,
+                "team_since": str(d.team_since) if d.team_since else None,
             }
             for d in drivers
         ],
@@ -617,6 +848,7 @@ async def generate_team_report(
                 "vehicle_engine": a.vehicle.engine if a.vehicle else "Unknown",
                 "season": a.season,
                 "assigned_at": a.assigned_at.isoformat(),
+                "unassigned_at": a.unassigned_at.isoformat() if a.unassigned_at else None,
             }
             for a in active_assignments
         ],
@@ -669,7 +901,6 @@ async def get_team_reports(
 ) -> List[TeamReportResponse]:
     team_id = _ensure_manager_team(current_user)
 
-    # CRITICAL: Filter explicitly by this manager's team_id in the query itself
     result = await db.execute(
         select(Report)
         .options(selectinload(Report.generator))
@@ -713,7 +944,6 @@ async def get_team_manager_calendar(
     if not target_season or target_season not in available_seasons:
         target_season = available_seasons[-1] if available_seasons else datetime.now(timezone.utc).year
 
-    # Fetch season calendar events from shared telemetry_provider, filtered by team_name per session
     events_raw = await telemetry_provider.get_season_calendar_events(target_season, team_name=team_name)
 
     events: List[RaceCalendarEvent] = []
@@ -752,3 +982,52 @@ async def get_team_manager_calendar(
         events=events,
     )
 
+
+# ── 10. Season-over-Season Comparison Endpoint ────────────────────────────────
+@router.get("/season-comparison", response_model=SeasonComparisonResponse)
+async def get_season_comparison(
+    season_a: Optional[int] = Query(None, description="First season year to compare"),
+    season_b: Optional[int] = Query(None, description="Second season year to compare"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("teams:read")),
+) -> SeasonComparisonResponse:
+    team_id = _ensure_manager_team(current_user)
+
+    # Fetch Team Name
+    team_res = await db.execute(select(Team).where(Team.team_id == team_id))
+    team = team_res.scalar_one_or_none()
+    team_name = team.team_name if team else "My Team"
+
+    available_seasons = telemetry_provider.get_seasons()
+
+    # Determine dynamic defaults: current season vs. immediately preceding one
+    target_a = season_a
+    if not target_a or target_a not in available_seasons:
+        target_a = available_seasons[-1] if available_seasons else datetime.now(timezone.utc).year
+
+    target_b = season_b
+    if not target_b or target_b not in available_seasons:
+        if target_a in available_seasons:
+            idx = available_seasons.index(target_a)
+            if idx > 0:
+                target_b = available_seasons[idx - 1]
+            else:
+                target_b = available_seasons[1] if len(available_seasons) > 1 else (target_a - 1)
+        else:
+            target_b = target_a - 1
+
+    events_a_raw = await telemetry_provider.get_season_calendar_events(target_a, team_name=team_name)
+    events_b_raw = await telemetry_provider.get_season_calendar_events(target_b, team_name=team_name)
+
+    stats_a = _compute_season_stats(target_a, events_a_raw)
+    stats_b = _compute_season_stats(target_b, events_b_raw)
+
+    return SeasonComparisonResponse(
+        team_id=team_id,
+        team_name=team_name,
+        season_a=target_a,
+        season_b=target_b,
+        available_seasons=available_seasons,
+        stats_a=stats_a,
+        stats_b=stats_b,
+    )

@@ -5,7 +5,9 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
+
   Clock,
   Eye,
   Globe,
@@ -18,6 +20,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import {
+  bulkUpdateUserStatus,
   createUser,
   fetchRoles,
   fetchTeams,
@@ -28,6 +31,7 @@ import {
   type UserCreate,
   type LoginHistoryItem,
 } from "@/features/admin/api/adminApi";
+
 
 const STATUS_BADGE: Record<string, string> = {
   active:   "bg-success-green/10 text-success-green ring-1 ring-success-green/20",
@@ -64,19 +68,31 @@ function formatUserAgent(ua?: string | null): string {
 
 function UserRow({
   user,
+  selected,
+  onToggleSelect,
   onToggle,
   onSelect,
   toggling,
 }: {
   user: User;
+  selected: boolean;
+  onToggleSelect: (userId: string) => void;
   onToggle: (u: User) => void;
   onSelect: (u: User) => void;
   toggling: boolean;
 }) {
   const isActive = user.status === "active";
   return (
-    <tr className="border-b border-slate-800/60 transition-colors hover:bg-slate-800/30">
-      <td className="py-3.5 pl-4 cursor-pointer" onClick={() => onSelect(user)}>
+    <tr className={`border-b border-slate-800/60 transition-colors ${selected ? "bg-slate-800/50" : "hover:bg-slate-800/30"}`}>
+      <td className="py-3.5 pl-4 w-10">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggleSelect(user.user_id)}
+          className="rounded border-slate-700 bg-graphite-800 text-ferrari-red focus:ring-ferrari-red h-4 w-4 cursor-pointer"
+        />
+      </td>
+      <td className="py-3.5 pl-2 cursor-pointer" onClick={() => onSelect(user)}>
         <div>
           <p className="text-sm font-medium text-slate-100 hover:text-ferrari-red transition-colors flex items-center gap-1.5">
             {user.full_name}
@@ -127,6 +143,7 @@ function UserRow({
 }
 
 function UserDetailModal({ user, onClose }: { user: User; onClose: () => void }) {
+
   const [activeTab, setActiveTab] = useState<"overview" | "history">("overview");
 
   const { data: history = [], isLoading: loadingHistory } = useQuery<LoginHistoryItem[]>({
@@ -399,6 +416,11 @@ export default function UsersPage() {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
 
+  // Bulk action state
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [bulkConfirmTarget, setBulkConfirmTarget] = useState<"active" | "disabled" | null>(null);
+  const [bulkError, setBulkError] = useState("");
+
   const queryClient = useQueryClient();
 
   const { data: users = [], isLoading } = useQuery({
@@ -418,6 +440,37 @@ export default function UsersPage() {
       queryClient.invalidateQueries({ queryKey: ["admin-users"] });
     },
   });
+
+  const bulkMutation = useMutation({
+    mutationFn: () => {
+      if (!bulkConfirmTarget) throw new Error("No target status set");
+      return bulkUpdateUserStatus(selectedUserIds, bulkConfirmTarget);
+    },
+    onSuccess: () => {
+      setSelectedUserIds([]);
+      setBulkConfirmTarget(null);
+      setBulkError("");
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+    },
+    onError: (e: Error & { response?: { data?: { detail?: string } } }) => {
+      setBulkError(e.response?.data?.detail ?? "Failed to perform bulk user update.");
+    },
+  });
+
+  const handleToggleSelectAll = () => {
+    if (users.length === 0) return;
+    if (selectedUserIds.length === users.length) {
+      setSelectedUserIds([]);
+    } else {
+      setSelectedUserIds(users.map(u => u.user_id));
+    }
+  };
+
+  const handleToggleSelectUser = (userId: string) => {
+    setSelectedUserIds(prev =>
+      prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -463,6 +516,42 @@ export default function UsersPage() {
         </select>
       </div>
 
+      {/* Bulk Action Bar */}
+      <AnimatePresence>
+        {selectedUserIds.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="flex items-center justify-between bg-graphite-800 border border-slate-700 rounded-lg px-4 py-3 shadow-lg"
+          >
+            <span className="text-xs font-semibold text-slate-200">
+              {selectedUserIds.length} user{selectedUserIds.length > 1 ? "s" : ""} selected
+            </span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => { setBulkConfirmTarget("active"); setBulkError(""); }}
+                className="rounded-md bg-success-green/15 text-success-green ring-1 ring-success-green/30 px-3.5 py-1.5 text-xs font-semibold hover:bg-success-green/25 transition-all flex items-center gap-1.5"
+              >
+                <CheckCircle2 size={13} /> Enable Selected
+              </button>
+              <button
+                onClick={() => { setBulkConfirmTarget("disabled"); setBulkError(""); }}
+                className="rounded-md bg-ferrari-red/15 text-red-400 ring-1 ring-ferrari-red/30 px-3.5 py-1.5 text-xs font-semibold hover:bg-ferrari-red/25 transition-all flex items-center gap-1.5"
+              >
+                <UserX size={13} /> Disable Selected
+              </button>
+              <button
+                onClick={() => setSelectedUserIds([])}
+                className="text-xs text-slate-400 hover:text-slate-200 px-2 underline"
+              >
+                Deselect All
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Table */}
       <div className="rounded-xl border border-slate-800 bg-slate-surface overflow-hidden">
         <div className="border-b border-slate-800 px-4 py-3 flex items-center gap-2">
@@ -484,8 +573,16 @@ export default function UsersPage() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-slate-800/60">
-                {["User", "Role", "Team", "Status", "Created", "Actions"].map(h => (
-                  <th key={h} className="py-3 pl-4 text-left text-xs font-semibold uppercase tracking-widest text-slate-500 first:pl-4">
+                <th className="py-3 pl-4 w-10">
+                  <input
+                    type="checkbox"
+                    checked={users.length > 0 && selectedUserIds.length === users.length}
+                    onChange={handleToggleSelectAll}
+                    className="rounded border-slate-700 bg-graphite-800 text-ferrari-red focus:ring-ferrari-red h-4 w-4 cursor-pointer"
+                  />
+                </th>
+                {["User", "Role", "Team", "Status", "Created", "Actions"].map((h, idx) => (
+                  <th key={h} className={`py-3 text-left text-xs font-semibold uppercase tracking-widest text-slate-500 ${idx === 0 ? "pl-2" : "px-4"}`}>
                     {h}
                   </th>
                 ))}
@@ -496,6 +593,8 @@ export default function UsersPage() {
                 <UserRow
                   key={user.user_id}
                   user={user}
+                  selected={selectedUserIds.includes(user.user_id)}
+                  onToggleSelect={handleToggleSelectUser}
                   onSelect={setSelectedUser}
                   onToggle={() => toggleMutation.mutate(user)}
                   toggling={togglingId === user.user_id}
@@ -505,6 +604,59 @@ export default function UsersPage() {
           </table>
         )}
       </div>
+
+      {/* Bulk Action Confirmation Modal */}
+      <AnimatePresence>
+        {bulkConfirmTarget && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 16 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 16 }}
+              className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-surface shadow-2xl p-6 space-y-4"
+            >
+              <div className="flex items-center gap-3 text-amber font-bold text-base">
+                <AlertTriangle size={22} />
+                <span>Confirm Bulk Status Change</span>
+              </div>
+              <p className="text-sm text-slate-300">
+                Are you sure you want to change the status of <span className="font-bold text-white">{selectedUserIds.length}</span> selected user(s) to{" "}
+                <span className={`font-bold uppercase ${bulkConfirmTarget === "active" ? "text-success-green" : "text-red-400"}`}>
+                  {bulkConfirmTarget}
+                </span>?
+              </p>
+              <div className="text-xs text-slate-400 bg-graphite-800 p-3 rounded-lg border border-slate-800 space-y-1">
+                <p className="font-semibold text-slate-300">Security & Audit Notice:</p>
+                <p>• Higher-risk administrative action altering multiple user accounts simultaneously.</p>
+                <p>• Writes one individual traceable audit log entry (<code className="text-amber">user_status_bulk_changed</code>) per affected user.</p>
+              </div>
+              {bulkError && (
+                <p className="text-xs text-red-400 flex items-center gap-1 bg-red-500/10 p-2.5 rounded-lg border border-red-500/20">
+                  <AlertCircle size={14} className="shrink-0" /> {bulkError}
+                </p>
+              )}
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => { setBulkConfirmTarget(null); setBulkError(""); }}
+                  className="flex-1 rounded-lg border border-slate-700 py-2.5 text-sm text-slate-400 hover:text-slate-200 transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => bulkMutation.mutate()}
+                  disabled={bulkMutation.isPending}
+                  className={`flex-1 rounded-lg py-2.5 text-sm font-semibold text-white transition-all ${
+                    bulkConfirmTarget === "active" ? "bg-success-green hover:bg-success-green/90" : "bg-ferrari-red hover:bg-ferrari-red/90"
+                  } disabled:opacity-50`}
+                >
+                  {bulkMutation.isPending ? "Applying..." : `Confirm ${bulkConfirmTarget === "active" ? "Enable" : "Disable"}`}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Create Modal */}
       <AnimatePresence>
@@ -529,3 +681,4 @@ export default function UsersPage() {
     </div>
   );
 }
+

@@ -10,6 +10,12 @@ class RoleCreate(BaseModel):
     description: Optional[str] = None
 
 
+class RoleDuplicateRequest(BaseModel):
+    new_role_name: str = Field(..., min_length=2, max_length=50)
+    description: Optional[str] = None
+
+
+
 class RoleResponse(BaseModel):
     role_id: str
     role_name: str

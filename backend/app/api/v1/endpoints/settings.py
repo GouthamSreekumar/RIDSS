@@ -10,10 +10,23 @@ from app.core.rbac import require_permission
 from app.db.session import get_db
 from app.models.settings import SystemSettings
 from app.models.user import User
-from app.schemas.settings import SystemSettingResponse, SystemSettingsUpdate
+from app.schemas.settings import (
+    RetentionPruneResponse,
+    RetentionSettingsResponse,
+    RetentionSettingsUpdate,
+    SystemSettingResponse,
+    SystemSettingsUpdate,
+)
 from app.services.audit import log_audit_event
+from app.services.retention import (
+    get_retention_policy,
+    run_retention_pruning_job,
+    update_retention_policy,
+)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+admin_settings_router = APIRouter(prefix="/admin/settings", tags=["admin-settings"])
+
 
 
 @router.get("", response_model=List[SystemSettingResponse])
@@ -74,3 +87,60 @@ async def update_system_settings(
 
     all_res = await db.execute(select(SystemSettings).order_by(SystemSettings.category.asc(), SystemSettings.key.asc()))
     return all_res.scalars().all()
+
+
+@router.get("/retention", response_model=RetentionSettingsResponse)
+@admin_settings_router.get("/retention", response_model=RetentionSettingsResponse)
+async def get_retention_settings_endpoint(
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(require_permission("settings:read")),
+) -> RetentionSettingsResponse:
+    """
+    Get data retention policy (audit log retention & login history retention in days). Administrator only.
+    """
+    policy = await get_retention_policy(db)
+    return RetentionSettingsResponse(**policy)
+
+
+@router.patch("/retention", response_model=RetentionSettingsResponse)
+@router.put("/retention", response_model=RetentionSettingsResponse)
+@admin_settings_router.patch("/retention", response_model=RetentionSettingsResponse)
+@admin_settings_router.put("/retention", response_model=RetentionSettingsResponse)
+async def update_retention_settings_endpoint(
+    payload: RetentionSettingsUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("settings:update")),
+) -> RetentionSettingsResponse:
+    """
+    Update data retention policy. Administrator only.
+    Null / absent indicates keep indefinitely.
+    """
+    new_policy = await update_retention_policy(
+        db=db,
+        audit_log_retention_days=payload.audit_log_retention_days,
+        login_history_retention_days=payload.login_history_retention_days,
+        user_id=current_user.user_id,
+        request=request,
+    )
+    return RetentionSettingsResponse(**new_policy)
+
+
+@router.post("/retention/prune", response_model=RetentionPruneResponse)
+@admin_settings_router.post("/retention/prune", response_model=RetentionPruneResponse)
+async def trigger_retention_pruning_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("settings:update")),
+) -> RetentionPruneResponse:
+    """
+    Manually trigger data retention pruning job. Administrator only.
+    Logs execution + record counts to AuditLog under action='retention_pruning_executed'.
+    """
+    result = await run_retention_pruning_job(
+        db=db,
+        user_id=current_user.user_id,
+        request=request,
+    )
+    return RetentionPruneResponse(**result)
+

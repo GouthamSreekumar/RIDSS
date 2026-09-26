@@ -14,6 +14,8 @@ class SettingCategory(str, enum.Enum):
     AUTHENTICATION = "authentication"
     EMAIL = "email"
     SESSION = "session"
+    RETENTION = "retention"
+
 
 
 class SystemSettings(Base):

@@ -263,6 +263,7 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
     def _fetch_single_race_results(self, season: int, round_number: int) -> List[Dict[str, Any]]:
         """
         Fetch results-only for a single round (laps=False, telemetry=False, weather=False).
+        Combines main race points and Sprint session points if applicable.
         Cached in-memory using results_key.
         """
         ckey = results_key(season, round_number)
@@ -270,7 +271,7 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
         if cached is not None:
             return cached
 
-        driver_results: List[Dict[str, Any]] = []
+        driver_map: Dict[str, Dict[str, Any]] = {}
         try:
             session = self._load_session_results_only(season, round_number, "Race")
             if hasattr(session, "results") and session.results is not None and not session.results.empty:
@@ -288,22 +289,60 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
                     pos_text = str(_clean_val(res_row.get("ClassifiedPosition"), "")) if res_row.get("ClassifiedPosition") else (str(int(pos)) if pos is not None else None)
                     pts = _clean_val(res_row.get("Points"))
                     stat = _clean_val(res_row.get("Status"))
+                    main_pts = float(pts) if pts is not None else 0.0
 
-                    driver_results.append(
-                        {
-                            "driver_code": d_code,
-                            "team_name": res_t_name,
-                            "driver_number": d_num,
-                            "full_name": _clean_val(res_row.get("FullName")),
-                            "position": int(pos) if pos is not None else None,
-                            "position_text": pos_text,
-                            "points": float(pts) if pts is not None else None,
-                            "status": str(stat) if stat is not None else None,
-                        }
-                    )
-            fastf1_cache.set(ckey, driver_results, TTL_COMPLETED_RESULTS)
+                    driver_map[d_code] = {
+                        "driver_code": d_code,
+                        "team_name": res_t_name,
+                        "driver_number": d_num,
+                        "full_name": _clean_val(res_row.get("FullName")),
+                        "position": int(pos) if pos is not None else None,
+                        "position_text": pos_text,
+                        "points": main_pts,
+                        "main_points": main_pts,
+                        "sprint_points": 0.0,
+                        "status": str(stat) if stat is not None else None,
+                    }
         except Exception as e:
             logger.warning("Could not load race results for round %s season %s: %s", round_number, season, e)
+
+        # Attempt to load Sprint session results if present on Sprint weekends
+        try:
+            sprint_session = self._load_session_results_only(season, round_number, "Sprint")
+            if hasattr(sprint_session, "results") and sprint_session.results is not None and not sprint_session.results.empty:
+                for _, srow in sprint_session.results.iterrows():
+                    sd_code = str(_clean_val(srow.get("Abbreviation") or srow.get("Driver"), ""))
+                    s_pts = _clean_val(srow.get("Points"))
+                    if s_pts is not None and float(s_pts) > 0:
+                        sprint_pts = float(s_pts)
+                        if sd_code in driver_map:
+                            driver_map[sd_code]["sprint_points"] = sprint_pts
+                            driver_map[sd_code]["points"] += sprint_pts
+                        else:
+                            res_t_name = str(_clean_val(srow.get("TeamName"), ""))
+                            d_num = _clean_val(srow.get("DriverNumber"), 0)
+                            try:
+                                d_num = int(d_num)
+                            except (ValueError, TypeError):
+                                d_num = 0
+                            driver_map[sd_code] = {
+                                "driver_code": sd_code,
+                                "team_name": res_t_name,
+                                "driver_number": d_num,
+                                "full_name": _clean_val(srow.get("FullName")),
+                                "position": None,
+                                "position_text": None,
+                                "points": sprint_pts,
+                                "main_points": 0.0,
+                                "sprint_points": sprint_pts,
+                                "status": "Sprint",
+                            }
+        except Exception:
+            pass
+
+        driver_results = list(driver_map.values())
+        if driver_results:
+            fastf1_cache.set(ckey, driver_results, TTL_COMPLETED_RESULTS)
 
         return driver_results
 

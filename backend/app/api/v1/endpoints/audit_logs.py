@@ -18,11 +18,35 @@ from app.schemas.audit import AuditLogResponse
 router = APIRouter(prefix="/audit-logs", tags=["audit-logs"])
 
 
+from datetime import datetime, time, timezone
+
+
+def _parse_date_bound(val: str, end_of_day: bool = False) -> Optional[datetime]:
+    if not val:
+        return None
+    try:
+        val_str = val.strip()
+        if len(val_str) == 10 and "-" in val_str:
+            d = datetime.strptime(val_str, "%Y-%m-%d").date()
+            if end_of_day:
+                return datetime.combine(d, time.max).replace(tzinfo=timezone.utc)
+            else:
+                return datetime.combine(d, time.min).replace(tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(val_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
 def _build_audit_log_query(
     action: Optional[str] = None,
     entity_type: Optional[str] = None,
     user_id: Optional[str] = None,
     search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ):
     stmt = select(AuditLog).options(selectinload(AuditLog.user))
 
@@ -43,6 +67,14 @@ def _build_audit_log_query(
                 AuditLog.details.ilike(q),
             )
         )
+    if date_from:
+        start_dt = _parse_date_bound(date_from, end_of_day=False)
+        if start_dt:
+            stmt = stmt.where(AuditLog.created_at >= start_dt)
+    if date_to:
+        end_dt = _parse_date_bound(date_to, end_of_day=True)
+        if end_dt:
+            stmt = stmt.where(AuditLog.created_at <= end_dt)
 
     return stmt.order_by(AuditLog.created_at.desc())
 
@@ -53,6 +85,8 @@ async def search_audit_logs(
     entity_type: Optional[str] = Query(None, description="Filter by entity type (e.g. User, Role)"),
     user_id: Optional[str] = Query(None, description="Filter by user ID who performed action"),
     search: Optional[str] = Query(None, description="Free text search filter"),
+    date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
@@ -61,7 +95,14 @@ async def search_audit_logs(
     """
     Search and filter system audit log history.
     """
-    stmt = _build_audit_log_query(action=action, entity_type=entity_type, user_id=user_id, search=search)
+    stmt = _build_audit_log_query(
+        action=action,
+        entity_type=entity_type,
+        user_id=user_id,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+    )
     stmt = stmt.offset(skip).limit(limit)
 
     res = await db.execute(stmt)
@@ -89,13 +130,22 @@ async def export_audit_logs_csv(
     entity_type: Optional[str] = Query(None),
     user_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     _current_user: User = Depends(require_permission("audit-logs:read")),
 ) -> Response:
     """
     Export audit log entries as a CSV download matching current search/filter criteria.
     """
-    stmt = _build_audit_log_query(action=action, entity_type=entity_type, user_id=user_id, search=search)
+    stmt = _build_audit_log_query(
+        action=action,
+        entity_type=entity_type,
+        user_id=user_id,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+    )
     stmt = stmt.limit(5000)
 
     res = await db.execute(stmt)
@@ -134,4 +184,5 @@ async def export_audit_logs_csv(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=ridss_audit_logs.csv"},
     )
+
 

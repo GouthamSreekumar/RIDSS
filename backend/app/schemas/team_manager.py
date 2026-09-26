@@ -1,7 +1,7 @@
 """
 Pydantic schemas for Team Manager module endpoints.
 """
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
@@ -18,9 +18,17 @@ class DriverSummary(BaseModel):
     driver_number: int
     full_name: str
     nationality: Optional[str] = None
+    team_since: Optional[date] = None
 
     class Config:
         from_attributes = True
+
+
+class DriverUpdateSchema(BaseModel):
+    driver_number: Optional[int] = None
+    nationality: Optional[str] = None
+    team_since: Optional[date] = None
+    is_active: Optional[bool] = None
 
 
 class VehicleSummary(BaseModel):
@@ -41,12 +49,25 @@ class DriverVehicleAssignmentResponse(BaseModel):
     vehicle_id: str
     status: str
     assigned_at: datetime
+    unassigned_at: Optional[datetime] = None
     season: Optional[int] = None
     driver: Optional[DriverSummary] = None
     vehicle: Optional[VehicleSummary] = None
 
     class Config:
         from_attributes = True
+
+
+class VehiclePairingHistoryItem(BaseModel):
+    assignment_id: str
+    vehicle_id: str
+    driver_id: str
+    driver_name: str
+    driver_number: int
+    assigned_at: datetime
+    unassigned_at: Optional[datetime] = None
+    status: str
+    season: Optional[int] = None
 
 
 class TeamDriverItem(BaseModel):
@@ -56,6 +77,8 @@ class TeamDriverItem(BaseModel):
     nationality: Optional[str] = None
     full_name: str
     email: str
+    team_since: Optional[date] = None
+    is_active: bool = True
     current_vehicle: Optional[VehicleSummary] = None
     current_assignment_id: Optional[str] = None
 
@@ -134,3 +157,34 @@ class TeamManagerCalendarResponse(BaseModel):
     team_name: str
     events: List[RaceCalendarEvent] = []
 
+
+class RacePointsItem(BaseModel):
+    round_number: int
+    event_name: str
+    official_event_name: Optional[str] = None
+    event_date: Optional[str] = None
+    is_completed: bool
+    race_points: float
+    cumulative_points: float
+
+
+class SeasonStats(BaseModel):
+    season: int
+    total_points: float
+    avg_finishing_position: Optional[float] = None
+    wins_count: int
+    podiums_count: int
+    races_completed: int
+    total_races: int
+    is_partial: bool
+    race_by_race_points: List[RacePointsItem] = []
+
+
+class SeasonComparisonResponse(BaseModel):
+    team_id: str
+    team_name: str
+    season_a: int
+    season_b: int
+    available_seasons: List[int]
+    stats_a: SeasonStats
+    stats_b: SeasonStats

@@ -18,6 +18,7 @@ class DriverVehicleAssignment(Base):
     vehicle_id = Column(String, ForeignKey("vehicles.vehicle_id", ondelete="CASCADE"), nullable=False, index=True)
     status = Column(String, default="active", nullable=False, index=True)  # active / inactive
     assigned_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    unassigned_at = Column(DateTime(timezone=True), nullable=True)
     season = Column(Integer, nullable=True)
 
     team = relationship("Team")

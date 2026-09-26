@@ -113,6 +113,12 @@ export const toggleUserStatus = async (userId: string, status: "active" | "disab
   return data;
 };
 
+export const bulkUpdateUserStatus = async (userIds: string[], status: "active" | "disabled"): Promise<User[]> => {
+  const { data } = await apiClient.patch<User[]>("/api/v1/admin/users/bulk-status", { user_ids: userIds, status });
+  return data;
+};
+
+
 // ── Teams ─────────────────────────────────────────────────────────────────────
 
 export const fetchTeams = async (): Promise<Team[]> => {
@@ -165,6 +171,12 @@ export const createRole = async (payload: { role_name: string; description?: str
   const { data } = await apiClient.post<Role>("/api/v1/roles", payload);
   return data;
 };
+
+export const duplicateRole = async (roleId: string, payload: { new_role_name: string; description?: string }): Promise<RoleMatrixEntry> => {
+  const { data } = await apiClient.post<RoleMatrixEntry>(`/api/v1/admin/roles/${roleId}/duplicate`, payload);
+  return data;
+};
+
 
 export const updateRolePermissions = async (roleId: string, permissionIds: string[]): Promise<void> => {
   await apiClient.put(`/api/v1/roles/${roleId}/permissions`, { permission_ids: permissionIds });
@@ -229,7 +241,8 @@ export const archiveNotification = async (notifId: string): Promise<void> => {
 // ── Audit Logs ────────────────────────────────────────────────────────────────
 
 export const fetchAuditLogs = async (params?: {
-  action?: string; entity_type?: string; user_id?: string; search?: string; skip?: number; limit?: number;
+  action?: string; entity_type?: string; user_id?: string; search?: string;
+  date_from?: string; date_to?: string; skip?: number; limit?: number;
 }): Promise<AuditLog[]> => {
   const { data } = await apiClient.get<AuditLog[]>("/api/v1/audit-logs", { params });
   return data;
@@ -237,7 +250,9 @@ export const fetchAuditLogs = async (params?: {
 
 export const exportAuditLogsCsv = async (params?: {
   action?: string; entity_type?: string; user_id?: string; search?: string;
+  date_from?: string; date_to?: string;
 }): Promise<void> => {
+
   const response = await apiClient.get("/api/v1/audit-logs/export", {
     params,
     responseType: "blob",
@@ -264,6 +279,32 @@ export const updateSettings = async (settings: Record<string, string>): Promise<
   const { data } = await apiClient.put<SystemSetting[]>("/api/v1/settings", { settings });
   return data;
 };
+
+export interface RetentionSettings {
+  audit_log_retention_days: number | null;
+  login_history_retention_days: number | null;
+}
+
+export interface RetentionPruneResult {
+  audit_logs_pruned: number;
+  login_history_pruned: number;
+}
+
+export const fetchRetentionSettings = async (): Promise<RetentionSettings> => {
+  const { data } = await apiClient.get<RetentionSettings>("/api/v1/admin/settings/retention");
+  return data;
+};
+
+export const updateRetentionSettings = async (payload: RetentionSettings): Promise<RetentionSettings> => {
+  const { data } = await apiClient.patch<RetentionSettings>("/api/v1/admin/settings/retention", payload);
+  return data;
+};
+
+export const triggerRetentionPruning = async (): Promise<RetentionPruneResult> => {
+  const { data } = await apiClient.post<RetentionPruneResult>("/api/v1/admin/settings/retention/prune");
+  return data;
+};
+
 
 // ── System Health & Login History ─────────────────────────────────────────────
 

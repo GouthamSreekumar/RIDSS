@@ -28,6 +28,15 @@ Last updated: 2026-08-16
 - [x] Login history added to existing user detail view
 - [x] Verified Administrator-only access on both features
 
+## Administrator Module — Bulk Actions, Templates, Retention, Export
+- [x] Bulk user status endpoint + multi-select UI + per-user audit entries
+- [x] Role duplication endpoint + UI + audit logging
+- [x] Retention settings (table extension, settings UI, background pruning job)
+- [x] Pruning job logs its own execution + record count to AuditLog
+- [x] "Export Today" quick action + single-day date picker on Audit Logs
+
+
+
 
 ## Team Manager Module
 - [x] Report table extended (data, team_id columns)
@@ -46,6 +55,13 @@ Last updated: 2026-08-16
 - [x] Nationality flag mapping utility (static, frontend)
 - [x] Calendar page: completed vs upcoming status, own-team driver results shown
 - [x] Verified against a real completed race and a real upcoming race
+
+## Team Manager Module — Season Comparison, Tenure, Pairing History
+- [x] Season comparison API (reuses shared FastF1 team-filtering function) + chart/stats UI
+- [x] team_since field added to Driver/User + migration + driver create/edit flow updated
+- [x] "Team Manager since" / tenure shown on Roster
+- [x] Vehicle pairing history API (from existing DriverVehicleAssignment data)
+- [x] In-context pairing history UI on Roster screen
 
 
 ## Notes / Decisions
