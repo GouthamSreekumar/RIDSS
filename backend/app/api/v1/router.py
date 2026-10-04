@@ -13,6 +13,7 @@ from app.api.v1.endpoints import (
     races_circuits,
     roles,
     settings,
+    strategy_engineer,
     team_manager,
     teams,
     users,
@@ -40,6 +41,7 @@ router.include_router(settings.admin_settings_router)
 
 router.include_router(team_manager.router)
 router.include_router(race_engineer.router)
+router.include_router(strategy_engineer.router)
 router.include_router(driver.router)
 router.include_router(mechanic.router)
 

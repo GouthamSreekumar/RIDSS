@@ -840,8 +840,17 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
                 aligned_dist_list = [round(float(d), 2) for d in common_dist]
                 speed_delta_list = [round(float(sd), 2) for sd in (p_speed_interp - s_speed_interp)]
 
-        primary_color = p_tel.driver_color
+        p_code = primary_session["driver_code"].upper()
+        s_code = secondary_session["driver_code"].upper()
+
+        primary_color = p_tel.driver_color or ("#06B6D4" if p_code == "VER" else "#06B6D4")
         secondary_color = s_tel.driver_color
+
+        # Ensure secondary driver color in comparison mode is never duplicate blue
+        if s_code == "VER":
+            secondary_color = "#06B6D4"
+        elif not secondary_color or (primary_color and secondary_color.upper() == primary_color.upper()) or secondary_color.lower() in ["#3671c6", "#06b6d4", "#001a30", "#3b82f6", "#2563eb", "#0000ff", "#1e3d59"]:
+            secondary_color = "#F59E0B"
 
         comp_data = ComparisonData(
             primary_driver=primary_session["driver_code"],

@@ -154,3 +154,59 @@ class RaceEngineerDashboard(BaseModel):
     recent_reports: List[EngineeringReportResponse]
     available_seasons: List[int]
     quick_links: List[Dict[str, str]]
+
+
+# ── Lap Notes Schemas ────────────────────────────────────────────────────────
+class LapNoteCreate(BaseModel):
+    session_id: str = Field(..., description="Session identifier e.g. 2024_Monaco_Race")
+    driver: str = Field(..., description="Driver code e.g. VER")
+    lap_number: int = Field(..., ge=1, description="Lap number")
+    content: str = Field(..., min_length=1, description="Note text content")
+
+
+class LapNoteResponse(BaseModel):
+    id: str
+    user_id: str
+    author_name: str
+    session_id: str
+    driver: str
+    lap_number: int
+    content: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ── Saved Comparison Schemas ────────────────────────────────────────────────
+class SavedComparisonCreate(BaseModel):
+    season: int = Field(..., ge=2020)
+    circuit: str = Field(..., min_length=1)
+    session_type: str = Field("Race")
+    driver_a: str = Field(...)
+    lap_a: int = Field(..., ge=1)
+    driver_b: Optional[str] = None
+    season_b: Optional[int] = None
+    lap_b: Optional[int] = None
+    comparison_type: str = Field("driver_vs_driver", description="driver_vs_driver or cross_season")
+    label: Optional[str] = None
+
+
+class SavedComparisonResponse(BaseModel):
+    id: str
+    user_id: str
+    author_name: str
+    season: int
+    circuit: str
+    session_type: str
+    driver_a: str
+    lap_a: int
+    driver_b: Optional[str] = None
+    season_b: Optional[int] = None
+    lap_b: Optional[int] = None
+    comparison_type: str
+    label: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

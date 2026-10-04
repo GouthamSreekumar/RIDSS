@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,9 +15,11 @@ from app.core.rbac import require_permission
 from app.db.session import get_db
 from app.models.driver import Driver
 from app.models.driver_vehicle_assignment import DriverVehicleAssignment
+from app.models.lap_note import LapNote
 from app.models.notification import Notification
 from app.models.race_circuit import Circuit
 from app.models.report import Report
+from app.models.saved_comparison import SavedComparison
 from app.models.team import Team
 from app.models.user import User
 from app.models.vehicle import Vehicle
@@ -27,8 +29,12 @@ from app.schemas.race_engineer import (
     DynamicSeasonList,
     EngineeringReportCreate,
     EngineeringReportResponse,
+    LapNoteCreate,
+    LapNoteResponse,
     LapTelemetry,
     RaceEngineerDashboard,
+    SavedComparisonCreate,
+    SavedComparisonResponse,
     SessionInfo,
     SessionOverview,
 )
@@ -39,6 +45,7 @@ from app.services.race_telemetry import (
     get_processed_session_overview,
     get_team_driver_codes,
 )
+from app.services.telemetry_export import export_lap_telemetry_pdf, generate_telemetry_chart_image
 from app.services.telemetry_provider import telemetry_provider
 
 logger = logging.getLogger(__name__)
@@ -53,6 +60,36 @@ def _ensure_engineer_team(user: User) -> str:
             detail="User is not assigned to any team. Contact an Administrator.",
         )
     return user.team_id
+
+
+def _parse_session_id(session_id: str, season: Optional[int] = None, circuit: Optional[str] = None, session_type: Optional[str] = None):
+    """Parses session_id slug or fallback parameters to season, circuit_name, and session_type."""
+    target_season = season
+    target_circuit = circuit
+    target_session_type = session_type or "Race"
+
+    if not target_season or not target_circuit:
+        parts = session_id.split("_")
+        if len(parts) >= 3:
+            try:
+                target_season = int(parts[0])
+            except ValueError:
+                target_season = 2024
+            target_circuit = parts[1].replace("_", " ").title()
+            target_session_type = parts[2].title()
+        elif len(parts) == 2:
+            try:
+                target_season = int(parts[0])
+            except ValueError:
+                target_season = 2024
+            target_circuit = parts[1].replace("_", " ").title()
+
+    if not target_season:
+        target_season = 2024
+    if not target_circuit:
+        target_circuit = "Bahrain"
+
+    return target_season, target_circuit, target_session_type
 
 
 # ── 1. Engineering Dashboard Overview ─────────────────────────────────────────
@@ -310,7 +347,6 @@ async def get_lap_telemetry_endpoint(
         db, team_id, season=season, circuit_name=circuit, session_type=session_type
     )
 
-    # Server-side team validation: driver must belong to current user's team unless comparing
     if driver.upper() not in allowed_codes:
         logger.info("Driver %s not in team codes %s, validating team membership...", driver, allowed_codes)
 
@@ -383,7 +419,6 @@ async def generate_engineering_report(
 ) -> EngineeringReportResponse:
     team_id = _ensure_engineer_team(current_user)
 
-    # Resolve target driver if driver_id or driver_code supplied
     target_driver_user_id = None
     target_driver_name = "Team Driver"
 
@@ -408,7 +443,6 @@ async def generate_engineering_report(
             target_driver_user_id = d.user_id
             target_driver_name = d.user.full_name
 
-    # Construct report data snapshot (summary statistics, findings, stint trends - NO raw telemetry arrays)
     report_data_snapshot = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "team_id": team_id,
@@ -438,7 +472,6 @@ async def generate_engineering_report(
     db.add(new_report)
     await db.flush()
 
-    # 1. Log to shared AuditLog table via log_audit_event
     await log_audit_event(
         db=db,
         user_id=current_user.user_id,
@@ -455,7 +488,6 @@ async def generate_engineering_report(
         request=request,
     )
 
-    # 2. Issue Notification for driver's user_id if target driver resolved
     if target_driver_user_id:
         notification = Notification(
             user_id=target_driver_user_id,
@@ -511,3 +543,392 @@ async def get_engineering_reports(
         )
         for r in reports
     ]
+
+
+# ── 10. Lap Notes Endpoints ───────────────────────────────────────────────────
+@router.post("/lap-notes", response_model=LapNoteResponse, status_code=status.HTTP_201_CREATED)
+async def create_lap_note(
+    payload: LapNoteCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("telemetry:read")),
+) -> LapNoteResponse:
+    _ensure_engineer_team(current_user)
+
+    new_note = LapNote(
+        user_id=current_user.user_id,
+        session_id=payload.session_id,
+        driver=payload.driver.upper(),
+        lap_number=payload.lap_number,
+        content=payload.content,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(new_note)
+    await db.flush()
+
+    await log_audit_event(
+        db=db,
+        user_id=current_user.user_id,
+        action="lap_note_created",
+        entity_type="LapNote",
+        entity_id=new_note.id,
+        details={
+            "session_id": payload.session_id,
+            "driver": payload.driver.upper(),
+            "lap_number": payload.lap_number,
+        },
+        request=request,
+    )
+
+    await db.commit()
+    await db.refresh(new_note)
+
+    return LapNoteResponse(
+        id=new_note.id,
+        user_id=new_note.user_id,
+        author_name=current_user.full_name,
+        session_id=new_note.session_id,
+        driver=new_note.driver,
+        lap_number=new_note.lap_number,
+        content=new_note.content,
+        created_at=new_note.created_at,
+    )
+
+
+@router.get("/lap-notes", response_model=List[LapNoteResponse])
+async def get_lap_notes(
+    session_id: str = Query(...),
+    driver: str = Query(...),
+    lap_number: int = Query(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("telemetry:read")),
+) -> List[LapNoteResponse]:
+    _ensure_engineer_team(current_user)
+
+    result = await db.execute(
+        select(LapNote)
+        .options(selectinload(LapNote.user))
+        .where(
+            LapNote.session_id == session_id,
+            LapNote.driver.ilike(driver),
+            LapNote.lap_number == lap_number,
+        )
+        .order_by(LapNote.created_at.asc())
+    )
+    notes = result.scalars().all()
+
+    return [
+        LapNoteResponse(
+            id=n.id,
+            user_id=n.user_id,
+            author_name=n.user.full_name if n.user else "Race Engineer",
+            session_id=n.session_id,
+            driver=n.driver,
+            lap_number=n.lap_number,
+            content=n.content,
+            created_at=n.created_at,
+        )
+        for n in notes
+    ]
+
+
+@router.delete("/lap-notes/{id}")
+async def delete_lap_note(
+    id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("telemetry:read")),
+) -> Dict[str, str]:
+    _ensure_engineer_team(current_user)
+
+    res = await db.execute(
+        select(LapNote)
+        .options(selectinload(LapNote.user))
+        .where(LapNote.id == id)
+    )
+    note = res.scalar_one_or_none()
+    if not note:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Lap note not found.",
+        )
+
+    # Permission check: note author or Administrator
+    user_role_res = await db.execute(select(User).options(selectinload(User.role)).where(User.user_id == current_user.user_id))
+    cur_u = user_role_res.scalar_one_or_none()
+    is_admin = cur_u and cur_u.role and cur_u.role.role_name == "Administrator"
+
+    if note.user_id != current_user.user_id and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only delete your own lap notes.",
+        )
+
+    await db.delete(note)
+
+    await log_audit_event(
+        db=db,
+        user_id=current_user.user_id,
+        action="lap_note_deleted",
+        entity_type="LapNote",
+        entity_id=id,
+        details={
+            "session_id": note.session_id,
+            "driver": note.driver,
+            "lap_number": note.lap_number,
+        },
+        request=request,
+    )
+
+    await db.commit()
+
+    return {"message": "Lap note deleted successfully."}
+
+
+# ── 11. Telemetry Chart Export Endpoint (PDF/PNG) ──────────────────────────────
+@router.get("/lap-telemetry/{session_id}/{driver}/{lap}/export")
+async def export_lap_telemetry(
+    session_id: str,
+    driver: str,
+    lap: int,
+    format: str = Query("pdf", description="pdf or png"),
+    season: Optional[int] = Query(None),
+    circuit: Optional[str] = Query(None),
+    session_type: Optional[str] = Query(None),
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("telemetry:read")),
+):
+    team_id = _ensure_engineer_team(current_user)
+
+    target_season, target_circuit, target_session_type = _parse_session_id(
+        session_id, season, circuit, session_type
+    )
+
+    try:
+        lap_tel = await get_processed_lap_telemetry(
+            db=db,
+            season=target_season,
+            circuit_name=target_circuit,
+            session_type=target_session_type,
+            driver_code=driver,
+            lap_number=lap,
+        )
+    except Exception as e:
+        logger.error("Failed to fetch lap telemetry for export: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Telemetry unavailable for export: {str(e)}",
+        )
+
+    # Fetch lap notes for this lap
+    notes_res = await db.execute(
+        select(LapNote)
+        .options(selectinload(LapNote.user))
+        .where(
+            LapNote.session_id == session_id,
+            LapNote.driver.ilike(driver),
+            LapNote.lap_number == lap,
+        )
+        .order_by(LapNote.created_at.asc())
+    )
+    notes_db = notes_res.scalars().all()
+    notes_list = [
+        {
+            "author_name": n.user.full_name if n.user else "Race Engineer",
+            "content": n.content,
+            "created_at": n.created_at.isoformat(),
+        }
+        for n in notes_db
+    ]
+
+    telemetry_dicts = [p.model_dump() for p in lap_tel.telemetry_points]
+    corners_dicts = [c.model_dump() for c in lap_tel.corners]
+
+    lap_time_str = None
+    if lap_tel.lap_time_seconds:
+        mins = int(lap_tel.lap_time_seconds // 60)
+        secs = lap_tel.lap_time_seconds % 60
+        lap_time_str = f"{mins}:{secs:06.3f}"
+
+    # Log audit event for export
+    await log_audit_event(
+        db=db,
+        user_id=current_user.user_id,
+        action="lap_export_generated",
+        entity_type="LapTelemetry",
+        entity_id=f"{session_id}_{driver}_L{lap}",
+        details={
+            "session_id": session_id,
+            "driver": driver,
+            "lap": lap,
+            "format": format,
+        },
+        request=request,
+    )
+
+    if format.lower() == "png":
+        png_bytes = generate_telemetry_chart_image(telemetry_dicts)
+        filename = f"Telemetry_{target_circuit}_{driver}_L{lap}.png"
+        return Response(
+            content=png_bytes,
+            media_type="image/png",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    else:
+        pdf_bytes = export_lap_telemetry_pdf(
+            session_name=target_session_type,
+            circuit_name=target_circuit,
+            season=target_season,
+            driver_code=driver,
+            driver_number=lap_tel.driver_number,
+            lap_number=lap,
+            lap_time_str=lap_time_str,
+            telemetry_points=telemetry_dicts,
+            corners=corners_dicts,
+            notes=notes_list,
+            engineer_name=current_user.full_name,
+        )
+        filename = f"RIDSS_Telemetry_{target_circuit}_{driver}_L{lap}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+
+# ── 12. Saved Comparisons Endpoints ──────────────────────────────────────────
+@router.post("/saved-comparisons", response_model=SavedComparisonResponse, status_code=status.HTTP_201_CREATED)
+async def create_saved_comparison(
+    payload: SavedComparisonCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("telemetry:read")),
+) -> SavedComparisonResponse:
+    _ensure_engineer_team(current_user)
+
+    new_comp = SavedComparison(
+        user_id=current_user.user_id,
+        season=payload.season,
+        circuit=payload.circuit,
+        session_type=payload.session_type,
+        driver_a=payload.driver_a,
+        lap_a=payload.lap_a,
+        driver_b=payload.driver_b,
+        season_b=payload.season_b,
+        lap_b=payload.lap_b,
+        comparison_type=payload.comparison_type,
+        label=payload.label or f"{payload.circuit} {payload.driver_a} L{payload.lap_a} vs {payload.driver_b or payload.driver_a}",
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(new_comp)
+    await db.flush()
+
+    await log_audit_event(
+        db=db,
+        user_id=current_user.user_id,
+        action="saved_comparison_created",
+        entity_type="SavedComparison",
+        entity_id=new_comp.id,
+        details={
+            "circuit": payload.circuit,
+            "driver_a": payload.driver_a,
+            "driver_b": payload.driver_b,
+        },
+        request=request,
+    )
+
+    await db.commit()
+    await db.refresh(new_comp)
+
+    return SavedComparisonResponse(
+        id=new_comp.id,
+        user_id=new_comp.user_id,
+        author_name=current_user.full_name,
+        season=new_comp.season,
+        circuit=new_comp.circuit,
+        session_type=new_comp.session_type,
+        driver_a=new_comp.driver_a,
+        lap_a=new_comp.lap_a,
+        driver_b=new_comp.driver_b,
+        season_b=new_comp.season_b,
+        lap_b=new_comp.lap_b,
+        comparison_type=new_comp.comparison_type,
+        label=new_comp.label,
+        created_at=new_comp.created_at,
+    )
+
+
+@router.get("/saved-comparisons", response_model=List[SavedComparisonResponse])
+async def get_saved_comparisons(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("telemetry:read")),
+) -> List[SavedComparisonResponse]:
+    _ensure_engineer_team(current_user)
+
+    result = await db.execute(
+        select(SavedComparison)
+        .options(selectinload(SavedComparison.user))
+        .where(SavedComparison.user_id == current_user.user_id)
+        .order_by(SavedComparison.created_at.desc())
+    )
+    saved_list = result.scalars().all()
+
+    return [
+        SavedComparisonResponse(
+            id=s.id,
+            user_id=s.user_id,
+            author_name=s.user.full_name if s.user else "Race Engineer",
+            season=s.season,
+            circuit=s.circuit,
+            session_type=s.session_type,
+            driver_a=s.driver_a,
+            lap_a=s.lap_a,
+            driver_b=s.driver_b,
+            season_b=s.season_b,
+            lap_b=s.lap_b,
+            comparison_type=s.comparison_type,
+            label=s.label,
+            created_at=s.created_at,
+        )
+        for s in saved_list
+    ]
+
+
+@router.delete("/saved-comparisons/{id}")
+async def delete_saved_comparison(
+    id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("telemetry:read")),
+) -> Dict[str, str]:
+    _ensure_engineer_team(current_user)
+
+    res = await db.execute(select(SavedComparison).where(SavedComparison.id == id))
+    comp = res.scalar_one_or_none()
+    if not comp:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Saved comparison not found.",
+        )
+
+    if comp.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only delete your own saved comparisons.",
+        )
+
+    await db.delete(comp)
+
+    await log_audit_event(
+        db=db,
+        user_id=current_user.user_id,
+        action="saved_comparison_deleted",
+        entity_type="SavedComparison",
+        entity_id=id,
+        request=request,
+    )
+
+    await db.commit()
+
+    return {"message": "Saved comparison deleted successfully."}

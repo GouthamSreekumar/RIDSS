@@ -19,6 +19,7 @@ from app.models.driver import Driver
 from app.models.driver_vehicle_assignment import DriverVehicleAssignment
 from app.models.notification import Notification
 from app.models.report import Report
+from app.models.role import Role
 from app.models.team import Team
 from app.models.user import User
 from app.models.vehicle import Vehicle
@@ -33,6 +34,8 @@ from app.schemas.team_manager import (
     RecentActivityItem,
     SeasonComparisonResponse,
     SeasonStats,
+    StaffMemberItem,
+    StaffUpdateSchema,
     TeamDashboardSummary,
     TeamDriverItem,
     TeamManagerCalendarResponse,
@@ -279,7 +282,7 @@ async def get_team_drivers(
                 nationality=d.nationality,
                 full_name=d.user.full_name if d.user else "Unknown",
                 email=d.user.email if d.user else "",
-                team_since=d.team_since,
+                team_since=d.user.team_since if d.user else None,
                 is_active=d.is_active,
                 current_vehicle=current_vehicle,
                 current_assignment_id=current_assignment_id,
@@ -312,13 +315,15 @@ async def update_team_driver(
             detail="Driver not found or does not belong to your team.",
         )
 
+    fields_set = payload.model_fields_set if hasattr(payload, "model_fields_set") else set()
+
     if payload.driver_number is not None:
         driver.driver_number = payload.driver_number
-    if payload.nationality is not None:
+    if payload.nationality is not None or "nationality" in fields_set:
         driver.nationality = payload.nationality
-    if payload.team_since is not None:
-        driver.team_since = payload.team_since
-    if payload.is_active is not None:
+    if (payload.team_since is not None or "team_since" in fields_set) and driver.user:
+        driver.user.team_since = payload.team_since
+    if payload.is_active is not None or "is_active" in fields_set:
         driver.is_active = payload.is_active
 
     await log_audit_event(
@@ -330,7 +335,7 @@ async def update_team_driver(
         details={
             "driver_id": driver.driver_id,
             "driver_name": driver.user.full_name if driver.user else None,
-            "team_since": str(driver.team_since) if driver.team_since else None,
+            "team_since": str(driver.user.team_since) if (driver.user and driver.user.team_since) else None,
             "driver_number": driver.driver_number,
             "is_active": driver.is_active,
         },
@@ -371,10 +376,124 @@ async def update_team_driver(
         nationality=driver.nationality,
         full_name=driver.user.full_name if driver.user else "Unknown",
         email=driver.user.email if driver.user else "",
-        team_since=driver.team_since,
+        team_since=driver.user.team_since if driver.user else None,
         is_active=driver.is_active,
         current_vehicle=current_vehicle,
         current_assignment_id=current_assignment_id,
+    )
+
+
+# ── 2b. Team Staff Directory Endpoints ───────────────────────────────────────
+@router.get("/staff", response_model=List[StaffMemberItem])
+async def get_team_staff(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("teams:read")),
+) -> List[StaffMemberItem]:
+    """
+    Get all operational staff members assigned to the Team Manager's team.
+    Excludes users with the Administrator role by default (team-scoped staff view).
+    """
+    team_id = _ensure_manager_team(current_user)
+
+    query = (
+        select(User)
+        .options(selectinload(User.role), selectinload(User.driver_profile))
+        .join(Role)
+        .where(
+            User.team_id == team_id,
+            Role.role_name != "Administrator",
+        )
+        .order_by(Role.role_name, User.full_name)
+    )
+
+    result = await db.execute(query)
+    users = result.scalars().all()
+
+    staff_list: List[StaffMemberItem] = []
+    for u in users:
+        d_profile = u.driver_profile
+        staff_list.append(
+            StaffMemberItem(
+                user_id=u.user_id,
+                full_name=u.full_name,
+                email=u.email,
+                role_id=u.role_id,
+                role_name=u.role.role_name if u.role else "Staff",
+                status=u.status,
+                team_since=u.team_since,
+                driver_number=d_profile.driver_number if d_profile else None,
+                fastf1_code=d_profile.fastf1_code if d_profile else None,
+                nationality=d_profile.nationality if d_profile else None,
+            )
+        )
+
+    return staff_list
+
+
+@router.patch("/staff/{user_id}", response_model=StaffMemberItem)
+async def update_team_staff_member(
+    user_id: str,
+    payload: StaffUpdateSchema,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("teams:assign_driver")),
+) -> StaffMemberItem:
+    """
+    Update staff member details (including team_since tenure date).
+    """
+    team_id = _ensure_manager_team(current_user)
+
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.role), selectinload(User.driver_profile))
+        .where(User.user_id == user_id, User.team_id == team_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Staff member not found or does not belong to your team.",
+        )
+
+    fields_set = payload.model_fields_set if hasattr(payload, "model_fields_set") else set()
+
+    if payload.full_name is not None:
+        user.full_name = payload.full_name
+    if payload.status is not None:
+        user.status = payload.status
+    if payload.team_since is not None or "team_since" in fields_set:
+        user.team_since = payload.team_since
+
+    await log_audit_event(
+        db=db,
+        user_id=current_user.user_id,
+        action="staff_tenure_updated",
+        entity_type="User",
+        entity_id=user.user_id,
+        details={
+            "user_id": user.user_id,
+            "full_name": user.full_name,
+            "role": user.role.role_name if user.role else None,
+            "team_since": str(user.team_since) if user.team_since else None,
+        },
+        request=request,
+    )
+
+    await db.commit()
+    await db.refresh(user)
+
+    d_profile = user.driver_profile
+    return StaffMemberItem(
+        user_id=user.user_id,
+        full_name=user.full_name,
+        email=user.email,
+        role_id=user.role_id,
+        role_name=user.role.role_name if user.role else "Staff",
+        status=user.status,
+        team_since=user.team_since,
+        driver_number=d_profile.driver_number if d_profile else None,
+        fastf1_code=d_profile.fastf1_code if d_profile else None,
+        nationality=d_profile.nationality if d_profile else None,
     )
 
 
@@ -416,7 +535,7 @@ async def get_team_vehicles(
                 user_id=d.user_id,
                 driver_number=d.driver_number,
                 nationality=d.nationality,
-                team_since=d.team_since,
+                team_since=d.user.team_since if d.user else None,
                 full_name=d.user.full_name if d.user else "Unknown",
             )
             current_assignment_id = assignment.assignment_id
@@ -620,7 +739,7 @@ async def assign_driver_to_vehicle(
             driver_number=driver.driver_number,
             full_name=driver.user.full_name,
             nationality=driver.nationality,
-            team_since=driver.team_since,
+            team_since=driver.user.team_since if driver.user else None,
         ),
         vehicle=VehicleSummary(
             vehicle_id=vehicle.vehicle_id,
@@ -734,7 +853,7 @@ async def list_assignments(
                 driver_number=a.driver.driver_number,
                 full_name=a.driver.user.full_name if a.driver.user else "Unknown",
                 nationality=a.driver.nationality,
-                team_since=a.driver.team_since,
+                team_since=a.driver.user.team_since if (a.driver and a.driver.user) else None,
             )
         v_summary = None
         if a.vehicle:
@@ -826,7 +945,7 @@ async def generate_team_report(
                 "full_name": d.user.full_name if d.user else "Unknown",
                 "email": d.user.email if d.user else "",
                 "nationality": d.nationality,
-                "team_since": str(d.team_since) if d.team_since else None,
+                "team_since": str(d.user.team_since) if (d.user and d.user.team_since) else None,
             }
             for d in drivers
         ],

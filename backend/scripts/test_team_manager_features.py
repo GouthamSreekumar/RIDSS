@@ -30,17 +30,24 @@ async def main():
 
         print(f"Testing for Team: {team.team_name} ({team.team_id})")
 
-        # 2. Test Driver team_since field update
+        # 2. Test User team_since field update for team staff/drivers
         driver_res = await db.execute(
-            select(Driver).join(User).where(User.team_id == team.team_id).limit(1)
+            select(Driver).options(selectinload(Driver.user)).join(User).where(User.team_id == team.team_id).limit(1)
         )
         driver = driver_res.scalar_one_or_none()
-        if driver:
+        if driver and driver.user:
+            orig_since = driver.user.team_since
             today_date = date.today()
-            driver.team_since = today_date
+            driver.user.team_since = today_date
             await db.commit()
-            await db.refresh(driver)
-            print(f"Successfully set driver #{driver.driver_number} team_since to {driver.team_since}")
+            await db.refresh(driver.user)
+            print(f"Successfully set driver/user #{driver.driver_number} team_since to {driver.user.team_since}")
+            # Restore original value
+            driver.user.team_since = orig_since
+            await db.commit()
+            await db.refresh(driver.user)
+            print(f"Restored driver/user #{driver.driver_number} team_since to {driver.user.team_since}")
+
 
         # 3. Test Vehicle pairing history query
         vehicle_res = await db.execute(

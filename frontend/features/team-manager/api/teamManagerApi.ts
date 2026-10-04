@@ -68,6 +68,25 @@ export interface DriverUpdatePayload {
   is_active?: boolean;
 }
 
+export interface StaffMemberItem {
+  user_id: string;
+  full_name: string;
+  email: string;
+  role_id: string;
+  role_name: string;
+  status: string;
+  team_since?: string | null;
+  driver_number?: number | null;
+  fastf1_code?: string | null;
+  nationality?: string | null;
+}
+
+export interface StaffUpdatePayload {
+  team_since?: string | null;
+  full_name?: string;
+  status?: string;
+}
+
 export interface TeamVehicleItem {
   vehicle_id: string;
   team_id: string;
@@ -338,9 +357,38 @@ export function useGenerateReport() {
   });
 }
 
+export async function fetchTeamStaff(): Promise<StaffMemberItem[]> {
+  const { data } = await apiClient.get<StaffMemberItem[]>("/api/v1/team-manager/staff");
+  return data;
+}
+
+export async function updateTeamStaffMember({ userId, payload }: { userId: string; payload: StaffUpdatePayload }): Promise<StaffMemberItem> {
+  const { data } = await apiClient.patch<StaffMemberItem>(`/api/v1/team-manager/staff/${userId}`, payload);
+  return data;
+}
+
 export function useTeamReports() {
   return useQuery({
     queryKey: ["team-manager-reports"],
     queryFn: fetchTeamReports,
+  });
+}
+
+export function useTeamStaff() {
+  return useQuery({
+    queryKey: ["team-manager-staff"],
+    queryFn: fetchTeamStaff,
+  });
+}
+
+export function useUpdateTeamStaffMember() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateTeamStaffMember,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["team-manager-staff"] });
+      queryClient.invalidateQueries({ queryKey: ["team-manager-drivers"] });
+      queryClient.invalidateQueries({ queryKey: ["team-manager-dashboard"] });
+    },
   });
 }

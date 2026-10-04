@@ -18,6 +18,9 @@ from app.models.audit import AuditLog
 from app.models.settings import SystemSettings, SettingCategory
 from app.models.login_history import LoginHistory
 from app.models.cache_status import CacheStatus
+from app.models.lap_note import LapNote
+from app.models.saved_comparison import SavedComparison
+from app.models.race_strategy import RaceStrategy
 
 __all__ = [
     "Base",
@@ -46,6 +49,9 @@ __all__ = [
     "SettingCategory",
     "LoginHistory",
     "CacheStatus",
+    "LapNote",
+    "SavedComparison",
+    "RaceStrategy",
 ]
 
 

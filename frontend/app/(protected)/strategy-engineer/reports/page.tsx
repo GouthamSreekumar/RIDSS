@@ -1,0 +1,381 @@
+"use client";
+
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import {
+  Calendar,
+  CheckCircle2,
+  ChevronRight,
+  Compass,
+  FileText,
+  Plus,
+  Radio,
+  Search,
+  User,
+  Zap,
+} from "lucide-react";
+import axiosInstance from "@/lib/axios";
+import { FastF1LoadingSkeleton } from "@/components/race-engineer/FastF1LoadingSkeleton";
+
+interface StrategyReport {
+  report_id: string;
+  team_id?: string;
+  generated_by: string;
+  generator_name: string;
+  report_type: string;
+  created_at: string;
+  data: {
+    session_id?: string;
+    driver_code?: string;
+    driver_name?: string;
+    target_driver_user_id?: string;
+    tire_degradation_summary?: string;
+    pit_window_reasoning?: string;
+    strategy_plan_id?: string;
+    key_findings?: string;
+    custom_data?: Record<string, any>;
+  };
+}
+
+async function fetchStrategyReports(): Promise<StrategyReport[]> {
+  const res = await axiosInstance.get("/api/v1/strategy-engineer/reports");
+  return res.data;
+}
+
+export default function StrategyReportsPage() {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedReport, setSelectedReport] = useState<StrategyReport | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  // Form fields for generating new report
+  const [formSessionId, setFormSessionId] = useState("2024_bahrain_race");
+  const [formDriverCode, setFormDriverCode] = useState("VER");
+  const [formDegradationSummary, setFormDegradationSummary] = useState(
+    "Medium stint degradation trend calculated at +0.0550 s/lap. Tire life thermal window remains stable."
+  );
+  const [formPitReasoning, setFormPitReasoning] = useState(
+    "Pit stop window recommendation: Laps 18–22. Crossover point determined accounting for 22.0s pit stop loss."
+  );
+  const [formKeyFindings, setFormKeyFindings] = useState(
+    "Execute 2-stop Medium-Hard-Soft strategy. Target first pit stop on Lap 19."
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  const {
+    data: reports,
+    isLoading,
+    isError,
+    refetch,
+  } = useQuery<StrategyReport[]>({
+    queryKey: ["strategyReportsList"],
+    queryFn: fetchStrategyReports,
+    staleTime: 60 * 1000,
+  });
+
+  const handleCreateReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      await axiosInstance.post("/api/v1/strategy-engineer/reports", {
+        session_id: formSessionId,
+        driver_code: formDriverCode,
+        tire_degradation_summary: formDegradationSummary,
+        pit_window_reasoning: formPitReasoning,
+        key_findings: formKeyFindings,
+      });
+      setIsModalOpen(false);
+      refetch();
+    } catch (err: any) {
+      alert(`Failed to generate strategy report: ${err?.response?.data?.detail || err.message}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const filteredReports = (reports || []).filter((r) => {
+    const sId = r.data?.session_id || "";
+    const dName = r.data?.driver_name || r.data?.driver_code || "";
+    const findings = r.data?.key_findings || "";
+    const q = searchTerm.toLowerCase();
+    return (
+      sId.toLowerCase().includes(q) ||
+      dName.toLowerCase().includes(q) ||
+      findings.toLowerCase().includes(q)
+    );
+  });
+
+  if (isLoading) {
+    return <FastF1LoadingSkeleton title="Loading Strategy Reports" message="Fetching archived race strategy reports..." />;
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Top Banner */}
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border border-slate-800 bg-slate-surface p-5 border-l-2 border-l-amber-400">
+        <div>
+          <div className="flex items-center gap-2 mb-1.5 font-mono">
+            <span className="sharp-tag bg-amber-500/10 text-amber-300 border border-amber-500/30">
+              <FileText size={12} className="text-amber-400 mr-1" /> Strategy reports
+            </span>
+            <span className="text-xs text-slate-400">• Shared Audit & Driver Notification Hooks</span>
+          </div>
+          <h1 className="text-xl font-semibold tracking-tight text-slate-100">
+            Race strategy analysis reports
+          </h1>
+          <p className="text-xs text-slate-400 mt-1">
+            Archived tire degradation summaries, pit window reasoning, and strategy plans saved into the shared Report infrastructure.
+          </p>
+        </div>
+
+        <button
+          onClick={() => setIsModalOpen(true)}
+          className="sharp-tag border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs font-mono font-semibold text-amber-300 hover:bg-amber-400 hover:text-slate-950 transition-colors flex items-center gap-1.5"
+        >
+          <Plus size={14} /> Generate strategy report
+        </button>
+      </div>
+
+      {/* Search and Filter */}
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="relative w-full sm:w-80">
+          <Search size={14} className="absolute left-3 top-2.5 text-slate-500" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search strategy reports..."
+            className="w-full border border-slate-800 bg-slate-surface pl-9 pr-4 py-2 text-xs text-slate-100 font-mono focus:border-amber-400 focus:outline-none"
+          />
+        </div>
+
+        <span className="text-xs font-mono text-slate-400">
+          Showing <strong className="text-slate-200 tabular-nums">{filteredReports.length}</strong> reports
+        </span>
+      </div>
+
+      {/* Reports Table */}
+      <div className="border border-slate-800 bg-slate-surface overflow-hidden border-l-2 border-l-slate-700">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs text-slate-300">
+            <thead className="bg-slate-950 text-slate-400 font-mono text-xs border-b border-slate-800">
+              <tr>
+                <th className="py-3 px-4 font-medium">Report ID</th>
+                <th className="py-3 px-4 font-medium">Session ID</th>
+                <th className="py-3 px-4 font-medium">Driver</th>
+                <th className="py-3 px-4 font-medium">Generated by</th>
+                <th className="py-3 px-4 font-medium">Created date</th>
+                <th className="py-3 px-4 text-right font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60 font-mono">
+              {filteredReports.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-8 text-center text-slate-500 font-sans">
+                    No strategy reports found matching criteria.
+                  </td>
+                </tr>
+              ) : (
+                filteredReports.map((report) => (
+                  <tr key={report.report_id} className="hover:bg-slate-900/60 transition-colors">
+                    <td className="py-3.5 px-4 font-semibold text-amber-400">
+                      #{report.report_id.slice(0, 8)}
+                    </td>
+                    <td className="py-3.5 px-4 text-slate-200">
+                      {report.data?.session_id || "Session Report"}
+                    </td>
+                    <td className="py-3.5 px-4 font-semibold text-slate-100 font-sans">
+                      {report.data?.driver_name || report.data?.driver_code || "Team Driver"}
+                    </td>
+                    <td className="py-3.5 px-4 text-slate-400 font-sans">
+                      {report.generator_name}
+                    </td>
+                    <td className="py-3.5 px-4 text-slate-400 tabular-nums">
+                      {new Date(report.created_at).toLocaleDateString()}{" "}
+                      {new Date(report.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </td>
+                    <td className="py-3.5 px-4 text-right">
+                      <button
+                        onClick={() => setSelectedReport(report)}
+                        className="sharp-tag border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-300 hover:bg-amber-400 hover:text-slate-950 transition-colors"
+                      >
+                        View summary
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Generate Strategy Report Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl border border-slate-700 bg-slate-surface p-6 shadow-2xl space-y-6 border-l-2 border-l-amber-400">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div>
+                <span className="sharp-tag bg-amber-500/10 text-amber-300 border border-amber-500/30 font-mono">
+                  [Generate Report]
+                </span>
+                <h2 className="text-lg font-semibold tracking-tight text-slate-100 mt-1">
+                  Generate Strategy Report & Notify Driver
+                </h2>
+              </div>
+              <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-200 font-mono">
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateReport} className="space-y-4 font-mono text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-400 mb-1">Session ID</label>
+                  <input
+                    type="text"
+                    value={formSessionId}
+                    onChange={(e) => setFormSessionId(e.target.value)}
+                    className="w-full border border-slate-800 bg-slate-950 px-3 py-2 text-slate-100 focus:border-amber-400 focus:outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Driver code</label>
+                  <input
+                    type="text"
+                    value={formDriverCode}
+                    onChange={(e) => setFormDriverCode(e.target.value.toUpperCase())}
+                    className="w-full border border-slate-800 bg-slate-950 px-3 py-2 text-slate-100 focus:border-amber-400 focus:outline-none font-bold"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1">Tire degradation summary</label>
+                <textarea
+                  rows={2}
+                  value={formDegradationSummary}
+                  onChange={(e) => setFormDegradationSummary(e.target.value)}
+                  className="w-full border border-slate-800 bg-slate-950 px-3 py-2 text-slate-100 focus:border-amber-400 focus:outline-none"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1">Pit window reasoning</label>
+                <textarea
+                  rows={2}
+                  value={formPitReasoning}
+                  onChange={(e) => setFormPitReasoning(e.target.value)}
+                  className="w-full border border-slate-800 bg-slate-950 px-3 py-2 text-slate-100 focus:border-amber-400 focus:outline-none text-purple-300"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1">Key findings & recommendations</label>
+                <textarea
+                  rows={3}
+                  value={formKeyFindings}
+                  onChange={(e) => setFormKeyFindings(e.target.value)}
+                  className="w-full border border-slate-800 bg-slate-950 px-3 py-2 text-slate-100 focus:border-amber-400 focus:outline-none font-sans"
+                  required
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="border border-slate-700 bg-slate-950 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="border border-amber-500/40 bg-amber-500/20 px-5 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-400 hover:text-slate-950 transition-colors disabled:opacity-50"
+                >
+                  {submitting ? "Generating report..." : "Generate & Send Report"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Report Summary Drawer/Modal */}
+      {selectedReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl border border-slate-700 bg-slate-surface p-6 shadow-2xl space-y-6 border-l-2 border-l-amber-400">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div>
+                <span className="sharp-tag bg-amber-500/10 text-amber-300 border border-amber-500/30 font-mono">
+                  [Report #{selectedReport.report_id.slice(0, 8)}]
+                </span>
+                <h2 className="text-lg font-semibold tracking-tight text-slate-100 mt-1">
+                  Strategy analysis: {selectedReport.data?.session_id || "F1 Session"}
+                </h2>
+              </div>
+              <button onClick={() => setSelectedReport(null)} className="text-slate-400 hover:text-slate-200 font-mono">
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4 bg-slate-950 p-4 border border-slate-800 text-xs font-mono">
+                <div>
+                  <p className="text-slate-400">Target driver:</p>
+                  <p className="text-slate-100 font-semibold text-sm mt-0.5 font-sans">
+                    {selectedReport.data?.driver_name || selectedReport.data?.driver_code || "Team Driver"}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-slate-400">Generated by:</p>
+                  <p className="text-slate-100 font-semibold text-sm mt-0.5 font-sans">{selectedReport.generator_name}</p>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-xs font-semibold text-slate-300 mb-1.5 font-sans">
+                  Tire degradation summary
+                </h4>
+                <div className="bg-slate-950 p-4 border border-slate-800 text-xs text-purple-300 leading-relaxed font-mono">
+                  {selectedReport.data?.tire_degradation_summary || "No degradation notes entered."}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-xs font-semibold text-slate-300 mb-1.5 font-sans">
+                  Pit stop window reasoning
+                </h4>
+                <div className="bg-slate-950 p-4 border border-slate-800 text-xs text-amber-300 leading-relaxed font-mono">
+                  {selectedReport.data?.pit_window_reasoning || "Standard pit window."}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-xs font-semibold text-slate-300 mb-1.5 font-sans">
+                  Key strategy findings & recommendations
+                </h4>
+                <div className="bg-slate-950 p-4 border border-slate-800 text-xs text-slate-200 leading-relaxed font-sans">
+                  {selectedReport.data?.key_findings || "No key findings entered."}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setSelectedReport(null)}
+                className="border border-slate-700 bg-slate-950 px-5 py-2 text-xs font-mono font-semibold text-slate-200 hover:bg-slate-800 transition-colors"
+              >
+                Close view
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

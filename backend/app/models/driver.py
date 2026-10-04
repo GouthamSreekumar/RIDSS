@@ -18,7 +18,6 @@ class Driver(Base):
     fastf1_driver_number = Column(Integer, nullable=True)
     fastf1_code = Column(String(3), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
-    team_since = Column(Date, nullable=True)
 
     user = relationship("User", back_populates="driver_profile")
 

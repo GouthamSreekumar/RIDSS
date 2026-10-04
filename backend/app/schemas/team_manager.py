@@ -188,3 +188,26 @@ class SeasonComparisonResponse(BaseModel):
     available_seasons: List[int]
     stats_a: SeasonStats
     stats_b: SeasonStats
+
+
+class StaffMemberItem(BaseModel):
+    user_id: str
+    full_name: str
+    email: str
+    role_id: str
+    role_name: str
+    status: str
+    team_since: Optional[date] = None
+    driver_number: Optional[int] = None
+    fastf1_code: Optional[str] = None
+    nationality: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class StaffUpdateSchema(BaseModel):
+    team_since: Optional[date] = None
+    full_name: Optional[str] = None
+    status: Optional[str] = None
+

@@ -23,6 +23,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import axiosInstance from "@/lib/axios";
 import { FastF1LoadingSkeleton } from "@/components/race-engineer/FastF1LoadingSkeleton";
+import { SavedComparisonsList } from "@/components/race-engineer/SavedComparisonsManager";
 
 interface DriverResult {
   driver_code: string;
@@ -1015,6 +1016,11 @@ export default function TelemetryOverviewPage() {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* ── Saved Telemetry Comparisons Panel ── */}
+          <div className="pt-2">
+            <SavedComparisonsList />
           </div>
         </div>
       )}

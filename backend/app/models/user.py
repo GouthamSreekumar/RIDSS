@@ -4,7 +4,7 @@ User SQLAlchemy model.
 import enum
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, DateTime, ForeignKey, String
+from sqlalchemy import Column, Date, DateTime, ForeignKey, String
 from sqlalchemy.orm import relationship, synonym
 
 from app.models.base import Base
@@ -34,6 +34,7 @@ class User(Base):
     role_id = Column(String, ForeignKey("roles.role_id"), nullable=False, index=True)
     team_id = Column(String, ForeignKey("teams.team_id"), nullable=True, index=True)
     status = Column(String, default=UserStatus.ACTIVE.value, nullable=False)
+    team_since = Column(Date, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     # Synonyms & Properties for compatibility

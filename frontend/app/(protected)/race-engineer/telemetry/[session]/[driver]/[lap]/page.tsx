@@ -6,13 +6,16 @@ import {
   Activity,
   AlertCircle,
   ArrowLeft,
+  Bookmark,
   CheckCircle2,
   ChevronRight,
   Cpu,
+  Download,
   FastForward,
   FileText,
   Gauge,
   Layers,
+  MessageSquare,
   Pause,
   Play,
   RotateCcw,
@@ -21,9 +24,12 @@ import {
   Zap,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import axiosInstance from "@/lib/axios";
 import { FastF1LoadingSkeleton } from "@/components/race-engineer/FastF1LoadingSkeleton";
+import { LapNotesPanel } from "@/components/race-engineer/LapNotesPanel";
+import { SaveComparisonModal, SavedComparisonsList } from "@/components/race-engineer/SavedComparisonsManager";
+import type { UserMeResponse } from "@/features/auth/schemas/loginSchema";
 
 interface TelemetryPoint {
   distance: number;
@@ -299,6 +305,21 @@ export default function LapTelemetryPage({
       : [driverCode];
   const comparisonDrivers = availableDrivers.filter((d) => d.toUpperCase() !== driverCode.toUpperCase());
 
+  const searchParams = useSearchParams();
+
+  // Fetch Current Logged-in User for permissions
+  const { data: currentUser = null } = useQuery<UserMeResponse | null>({
+    queryKey: ["currentUserMe"],
+    queryFn: async () => {
+      try {
+        const res = await axiosInstance.get("/api/v1/auth/me");
+        return res.data;
+      } catch {
+        return null;
+      }
+    },
+  });
+
   // Playback & State
   const [activeTime, setActiveTime] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -307,12 +328,59 @@ export default function LapTelemetryPage({
   const [secondaryDriver, setSecondaryDriver] = useState<string>(comparisonDrivers[0] || "PER");
   const [secondaryLap, setSecondaryLap] = useState<number>(lapNumber);
 
+  // Export Telemetry state
+  const [exportingFormat, setExportingFormat] = useState<"pdf" | "png" | null>(null);
+
+  // Save Comparison Modal state
+  const [showSaveComparisonModal, setShowSaveComparisonModal] = useState<boolean>(false);
+
+  // URL query params auto-sync for saved comparison links
+  useEffect(() => {
+    const isComp = searchParams.get("comparison") === "true";
+    const secDrv = searchParams.get("sec_driver");
+    const secLp = searchParams.get("sec_lap");
+    if (isComp || secDrv) {
+      setComparisonMode(true);
+      if (secDrv) setSecondaryDriver(secDrv);
+      if (secLp) setSecondaryLap(parseInt(secLp) || 1);
+    }
+  }, [searchParams]);
+
   // Sync secondary driver when season roster changes
   useEffect(() => {
     if (comparisonDrivers.length > 0 && !comparisonDrivers.includes(secondaryDriver)) {
       setSecondaryDriver(comparisonDrivers[0]);
     }
   }, [comparisonDrivers, secondaryDriver]);
+
+  // Export PDF / PNG handler
+  const handleExport = async (format: "pdf" | "png") => {
+    setExportingFormat(format);
+    try {
+      const res = await axiosInstance.get(
+        `/api/v1/race-engineer/lap-telemetry/${encodeURIComponent(resolvedParams.session)}/${encodeURIComponent(driverCode)}/${lapNumber}/export`,
+        {
+          params: { format },
+          responseType: "blob",
+        }
+      );
+      const blob = new Blob([res.data], {
+        type: format === "pdf" ? "application/pdf" : "image/png",
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `telemetry_${resolvedParams.session}_${driverCode}_lap${lapNumber}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      alert("Export failed: " + (err.response?.data?.detail || err.message || "Error generating export"));
+    } finally {
+      setExportingFormat(null);
+    }
+  };
 
   // Report Modal state
   const [showReportModal, setShowReportModal] = useState<boolean>(false);
@@ -363,8 +431,46 @@ export default function LapTelemetryPage({
   const maxDistance = points.length > 0 ? points[points.length - 1].distance : 5000;
   const maxTime = points.length > 0 ? points[points.length - 1].time_seconds || 90 : 90;
 
-  const primaryColor = telemetry?.driver_color || "#06B6D4";
-  const secondaryColor = comparisonData?.secondary_color || "#F59E0B";
+  // ── Smart Dynamic Driver Color Resolution ──
+  // Verstappen / Primary driver is ALWAYS Electric Cyan Blue (#06B6D4)
+  const isPrimaryVerstappen = driverCode.toUpperCase() === "VER";
+  const rawPrimaryColor = telemetry?.driver_color || "#06B6D4";
+  const primaryColor = isPrimaryVerstappen ? "#06B6D4" : rawPrimaryColor;
+
+  const secondaryDriverCode = (secondaryDriver || comparisonData?.secondary_driver || "").toUpperCase();
+  const isSecondaryVerstappen = secondaryDriverCode === "VER";
+
+  const isBlueOrSameColor = (colorHex: string | undefined, refColor: string) => {
+    if (!colorHex) return true;
+    const norm = colorHex.toUpperCase().trim();
+    const refNorm = refColor.toUpperCase().trim();
+    if (norm === refNorm) return true;
+
+    const blueHexes = [
+      "#06B6D4", "#3671C6", "#001A30", "#1E3D59", "#3B82F6",
+      "#2563EB", "#1D4ED8", "#60A5FA", "#0000FF", "#000080", "#005AFF", "#0284C7"
+    ];
+    if (blueHexes.includes(norm)) return true;
+
+    if (norm.startsWith("#") && norm.length === 7) {
+      const r = parseInt(norm.slice(1, 3), 16);
+      const g = parseInt(norm.slice(3, 5), 16);
+      const b = parseInt(norm.slice(5, 7), 16);
+      if (b > r + 15) return true;
+    }
+    return false;
+  };
+
+  let rawSecondaryColor = comparisonData?.secondary_color;
+  let secondaryColor: string;
+
+  if (isSecondaryVerstappen) {
+    secondaryColor = "#06B6D4"; // Verstappen stays blue
+  } else if (!rawSecondaryColor || isBlueOrSameColor(rawSecondaryColor, primaryColor)) {
+    secondaryColor = "#F59E0B"; // Bright Amber / Golden Yellow contrast for non-Verstappen secondary driver
+  } else {
+    secondaryColor = rawSecondaryColor;
+  }
 
   // Playback timer (runs on lap time_seconds)
   useEffect(() => {
@@ -636,24 +742,44 @@ export default function LapTelemetryPage({
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => handleExport("pdf")}
+            disabled={exportingFormat !== null}
+            className="inline-flex items-center gap-1.5 rounded-none border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-mono font-bold text-cyan-300 hover:bg-cyan-500/20 transition-colors disabled:opacity-50"
+            title="Download PDF report with high-res Matplotlib charts & lap notes"
+          >
+            <Download size={14} className="text-cyan-400" />
+            {exportingFormat === "pdf" ? "Exporting PDF..." : "Export PDF"}
+          </button>
+
+          <button
+            onClick={() => handleExport("png")}
+            disabled={exportingFormat !== null}
+            className="inline-flex items-center gap-1.5 rounded-none border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-mono font-semibold text-slate-300 hover:bg-slate-800 transition-colors disabled:opacity-50"
+            title="Download PNG chart image"
+          >
+            <Download size={14} className="text-slate-400" />
+            {exportingFormat === "png" ? "Exporting PNG..." : "Export PNG"}
+          </button>
+
           <button
             onClick={() => setComparisonMode(!comparisonMode)}
-            className={`inline-flex items-center gap-2 rounded-none border px-4 py-2 text-xs font-mono font-semibold transition-all ${
+            className={`inline-flex items-center gap-2 rounded-none border px-3 py-2 text-xs font-mono font-semibold transition-all ${
               comparisonMode
                 ? "border-amber-400 bg-amber-500 text-slate-950 font-bold"
                 : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800"
             }`}
           >
             <Sliders size={14} />
-            {comparisonMode ? "Comparison Mode Active" : "Toggle Driver Comparison"}
+            {comparisonMode ? "Comparison Active" : "Compare Driver"}
           </button>
 
           <button
             onClick={() => setShowReportModal(true)}
-            className="inline-flex items-center gap-2 rounded-none bg-cyan-400 px-4 py-2 text-xs font-mono font-bold text-slate-950 hover:bg-cyan-300 transition-colors"
+            className="inline-flex items-center gap-2 rounded-none bg-cyan-400 px-3 py-2 text-xs font-mono font-bold text-slate-950 hover:bg-cyan-300 transition-colors"
           >
-            <FileText size={14} /> Generate Engineering Report
+            <FileText size={14} /> Generate Report
           </button>
         </div>
       </div>
@@ -693,6 +819,13 @@ export default function LapTelemetryPage({
               className="w-16 rounded-none bg-slate-950 px-2 py-1 text-slate-100 border border-slate-700 text-center font-mono font-bold"
             />
           </div>
+
+          <button
+            onClick={() => setShowSaveComparisonModal(true)}
+            className="inline-flex items-center gap-1.5 rounded-none bg-amber-400 px-3 py-1 text-xs font-mono font-bold text-slate-950 hover:bg-amber-300 transition-colors"
+          >
+            <Bookmark size={13} /> Save comparison
+          </button>
 
           <div className="flex items-center gap-3 ml-auto">
             <span
@@ -826,24 +959,72 @@ export default function LapTelemetryPage({
                 </text>
               ))}
 
-              {/* Moving Position Dot for Driver 1 */}
-              <circle
-                cx={dotX}
-                cy={dotY}
-                r="7"
-                style={{ fill: primaryColor }}
-                className="stroke-slate-950 stroke-2"
-              />
-
-              {/* Moving Position Dot for Driver 2 (Comparison Mode) */}
-              {comparisonMode && comparisonData && secCurrentPoint && (
+              {/* Moving Position Dot & Label for Driver 1 (Primary) */}
+              <g key={`primary_dot_${driverCode}`}>
                 <circle
-                  cx={secDotX}
-                  cy={secDotY}
-                  r="7"
-                  style={{ fill: secondaryColor }}
+                  cx={dotX}
+                  cy={dotY}
+                  r="11"
+                  fill="none"
+                  stroke={primaryColor}
+                  strokeWidth="1.5"
+                  strokeOpacity="0.4"
+                />
+                <circle
+                  cx={dotX}
+                  cy={dotY}
+                  r="6.5"
+                  style={{ fill: primaryColor }}
                   className="stroke-slate-950 stroke-2"
                 />
+                <text
+                  x={dotX + 9}
+                  y={dotY - 7}
+                  fontSize="8"
+                  fontWeight="800"
+                  fill={primaryColor}
+                  stroke="#020617"
+                  strokeWidth="2"
+                  paintOrder="stroke"
+                  className="font-mono select-none"
+                >
+                  {driverCode}
+                </text>
+              </g>
+
+              {/* Moving Position Dot & Label for Driver 2 (Comparison Mode) */}
+              {comparisonMode && comparisonData && secCurrentPoint && (
+                <g key={`sec_dot_${secondaryDriver}`}>
+                  <circle
+                    cx={secDotX}
+                    cy={secDotY}
+                    r="11"
+                    fill="none"
+                    stroke={secondaryColor}
+                    strokeWidth="1.5"
+                    strokeOpacity="0.4"
+                  />
+                  <circle
+                    cx={secDotX}
+                    cy={secDotY}
+                    r="6.5"
+                    style={{ fill: secondaryColor }}
+                    className="stroke-slate-950 stroke-2"
+                  />
+                  <text
+                    x={secDotX + 9}
+                    y={secDotY + 11}
+                    fontSize="8"
+                    fontWeight="800"
+                    fill={secondaryColor}
+                    stroke="#020617"
+                    strokeWidth="2"
+                    paintOrder="stroke"
+                    className="font-mono select-none"
+                  >
+                    {secondaryDriver}
+                  </text>
+                </g>
               )}
             </svg>
           </div>
@@ -1221,6 +1402,33 @@ export default function LapTelemetryPage({
           </div>
         </div>
       </div>
+
+      {/* ── Lap Annotations & Saved Comparisons Grid Section ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-2">
+        {/* Feature 1: Lap Notes Panel */}
+        <LapNotesPanel
+          sessionId={resolvedParams.session}
+          driver={driverCode}
+          lapNumber={lapNumber}
+          currentUser={currentUser}
+        />
+
+        {/* Feature 3: Saved Comparisons List */}
+        <SavedComparisonsList />
+      </div>
+
+      {/* Save Comparison Modal */}
+      <SaveComparisonModal
+        isOpen={showSaveComparisonModal}
+        onClose={() => setShowSaveComparisonModal(false)}
+        season={season}
+        circuit={circuit}
+        sessionType={sessionType}
+        driverA={driverCode}
+        lapA={lapNumber}
+        driverB={secondaryDriver}
+        lapB={secondaryLap}
+      />
 
       {/* ── Generate Report Modal ── */}
       {showReportModal && (

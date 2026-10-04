@@ -56,10 +56,14 @@ Last updated: 2026-08-16
 - [x] Calendar page: completed vs upcoming status, own-team driver results shown
 - [x] Verified against a real completed race and a real upcoming race
 
-## Team Manager Module — Season Comparison, Tenure, Pairing History
+## Team Manager Module — Season Comparison, Tenure, Staff Directory & Pairing History
 - [x] Season comparison API (reuses shared FastF1 team-filtering function) + chart/stats UI
-- [x] team_since field added to Driver/User + migration + driver create/edit flow updated
-- [x] "Team Manager since" / tenure shown on Roster
+- [x] `team_since` column moved to `users` table via Alembic migration (`0011_user_team_since.py`) with data migration & removal from `drivers`
+- [x] Fixed tenure label text to "On team since [date]" (removed erroneous "Team Manager since" role reference)
+- [x] Fixed spurious Tsunoda default date bug (isolated test script DB mutation and cleared unrecorded driver dates)
+- [x] Backend driver & staff endpoints (`PATCH /team-manager/drivers/{id}` & `PATCH /team-manager/staff/{user_id}`) handle updating & resetting `user.team_since`
+- [x] New Staff Directory page (`/team-manager/staff`) listing all operational team personnel (excluding Administrator) with role badges & tenure
+- [x] Staff Directory includes single-member and bulk tenure backfill modals (`BulkStaffTenureModal`)
 - [x] Vehicle pairing history API (from existing DriverVehicleAssignment data)
 - [x] In-context pairing history UI on Roster screen
 
@@ -89,6 +93,14 @@ Last updated: 2026-08-16
 - [x] Tier 1 enriched: session.results header, sector times, Deleted/IsAccurate flags
 - [x] Comparison mode uses fastf1.utils.delta_time() + fastf1.plotting colors
 
+## Race Engineer Module — Lap Notes, Export, Saved Comparisons
+- [x] LapNote table + create/fetch/delete API + Tier 2 notes panel UI
+- [x] PDF export (reportlab + matplotlib chart regeneration) API + download button
+- [x] Lap notes included in exported PDF
+- [x] SavedComparison table + save/list/delete API
+- [x] Saved comparisons UI (save action + list + reopen-and-refetch behavior)
+- [x] Audit logging verified for note create/delete and export actions
+
 ## Driver Module
 - [x] Dashboard API + page (season points, last result, recent notifications/reports)
 - [x] Reports API + page (own reports only, detail view)
@@ -106,6 +118,16 @@ Last updated: 2026-08-16
 - [x] Maintenance scheduling + status update + history API + pages
 - [x] Audit logging verified for all write actions
 - [x] Notification to Team Manager on vehicle reaching Critical health
+- [x] Design tokens consistent with other modules
+
+## Strategy Engineer Module
+- [x] Confirmed reuse of Race Engineer's shared processed-data service function (no direct FastF1 calls)
+- [x] calculate_tire_degradation() — excludes deleted/SC/VSC laps, linear fit per stint/compound
+- [x] estimate_pit_window() — deterministic, configurable pit-loss constant, transparent reasoning shown
+- [x] Historical cross-season review API + page
+- [x] RaceStrategy table + create/view API + page
+- [x] Strategy report generation (shared Report table, audit log, driver notification)
+- [x] Strategy Engineer role/permissions scoped to strategy-only
 - [x] Design tokens consistent with other modules
 
 
