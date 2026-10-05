@@ -41,6 +41,8 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
+test reports/*.pdf
+test reports/*.md
 
 # Type Checkers & Linters
 .mypy_cache/

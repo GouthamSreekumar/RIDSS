@@ -242,14 +242,16 @@ def estimate_pit_window(
 ) -> PitRecommendationResponse:
     """
     Phase 1 Deterministic Pit Stop Window Recommendation:
-    Given current stint degradation rate D_1 and base pace B_1, and alternate compound pace (B_2, D_2):
-    Calculates the lap range where switching compounds becomes net-faster accounting for pit loss.
+    Calculates cumulative race completion time for staying out vs pitting on candidate laps.
 
     Formula / Reasoning:
-      Current lap pace: P_1(t) = B_1 + D_1 * t
-      Alternate fresh tire pace: P_2(1) = B_2 + D_2 * 1
-      Per-lap pace crossover: t_cross where P_1(t) = P_2(1) + (pit_loss / remaining_laps)
-      Deterministic Window: [ t_cross - 2, t_cross + 2 ]
+      For candidate pit lap L (with N_rem = total_race_laps - L remaining laps):
+        Time_stay(L) = Sum_{k=L+1}^{total_race_laps} [ B_1 + D_1 * (k - start_lap + 1) ]
+        Time_pit(L)  = pit_loss_seconds + Sum_{m=1}^{N_rem} [ B_2 + D_2 * m ]
+        Net Savings  = Time_stay(L) - Time_pit(L)
+
+      Optimal Pit Lap L* maximizes Net Savings.
+      If Net Savings <= 0 for all L (e.g. near race end under green flag), recommend holding position.
     """
     driver_code = stint_analysis.driver_code
     session_id = stint_analysis.session_id
@@ -290,30 +292,41 @@ def estimate_pit_window(
             alt_d = s.degradation_rate
             break
 
-    if alt_b is None or alt_d is None:
+    if alt_b is None or alt_d is None or alt_b > b1 + 1.5:
         fallback_used = True
         defaults = COMPOUND_DEFAULTS.get(alt_compound, {"base_delta": 0.5, "deg_rate": 0.04})
         alt_b = round(b1 + defaults["base_delta"], 3)
         alt_d = round(defaults["deg_rate"], 4)
 
-    # Calculate crossover lap: P_1(t) = P_2(1) => B_1 + D_1 * t = B_2 + D_2
-    # If D_1 > 0: t_crossover = (B_2 + D_2 - B_1) / D_1
-    crossover_lap: Optional[int] = None
-    w_start: Optional[int] = None
-    w_end: Optional[int] = None
-
     start_lap = current_stint.laps[0].lap_number if current_stint.laps else 1
     total_race_laps = min(total_laps, 70) if total_laps > 70 else total_laps
+    stint_laps_run = len(current_stint.laps) if current_stint.laps else 1
 
-    if d1 > 0:
-        raw_offset = (alt_b + alt_d - b1) / d1
-        crossover_lap = int(np.clip(round(start_lap + raw_offset), start_lap + 3, max(start_lap + 5, total_race_laps)))
-    else:
-        stint_len = len(current_stint.laps) if current_stint.laps else 15
-        crossover_lap = min(total_race_laps, start_lap + stint_len)
+    # Evaluate candidate pit laps L from max(start_lap + 3, start_lap + stint_laps_run) up to (total_race_laps - 3)
+    min_pit_lap = max(start_lap + 3, start_lap + stint_laps_run)
+    max_pit_lap = total_race_laps - 3
 
-    w_start = max(1, crossover_lap - 2)
-    w_end = min(total_race_laps, crossover_lap + 2)
+    best_lap: Optional[int] = None
+    max_time_saved: float = -99999.0
+
+    if min_pit_lap <= max_pit_lap:
+        for L in range(min_pit_lap, max_pit_lap + 1):
+            n_rem = total_race_laps - L
+            if n_rem < 3:
+                continue
+
+            # Time to complete remaining laps if staying out on current tires
+            stay_laps_k = np.arange(L + 1 - start_lap + 1, total_race_laps - start_lap + 2)
+            time_stay = float(np.sum(b1 + d1 * stay_laps_k))
+
+            # Time to complete remaining laps if pitting at lap L for alt_compound
+            alt_laps_m = np.arange(1, n_rem + 1)
+            time_pit = pit_loss_seconds + float(np.sum(alt_b + alt_d * alt_laps_m))
+
+            time_saved = time_stay - time_pit
+            if time_saved > max_time_saved:
+                max_time_saved = time_saved
+                best_lap = L
 
     fallback_note = (
         f" (Estimated using circuit compound fallback delta for {alt_compound})"
@@ -321,13 +334,29 @@ def estimate_pit_window(
         else f" (Derived from team stint data on {alt_compound})"
     )
 
-    reasoning_text = (
-        f"Phase 1 Deterministic Calculation: Current {curr_compound} stint # {current_stint.stint} exhibits "
-        f"a degradation rate of {d1:.4f} s/lap with estimated fresh base pace of {b1:.3f}s. "
-        f"Alternate compound {alt_compound} pace model is {alt_b:.3f}s base with {alt_d:.4f} s/lap degradation{fallback_note}. "
-        f"Accounting for circuit pit stop time loss constant of {pit_loss_seconds:.1f}s, net-faster compound crossover "
-        f"occurs at lap {crossover_lap}. Recommended pit window: Laps {w_start}–{w_end}."
-    )
+    crossover_lap: Optional[int] = None
+    w_start: Optional[int] = None
+    w_end: Optional[int] = None
+
+    if best_lap is not None and max_time_saved > 0:
+        crossover_lap = best_lap
+        w_start = max(start_lap + 1, crossover_lap - 2)
+        w_end = min(total_race_laps, crossover_lap + 2)
+        reasoning_text = (
+            f"Phase 1 Cumulative Race Time Optimization: Current {curr_compound} stint # {current_stint.stint} exhibits "
+            f"a degradation rate of {d1:.4f} s/lap with estimated fresh base pace of {b1:.3f}s. "
+            f"Alternate compound {alt_compound} pace model is {alt_b:.3f}s base with {alt_d:.4f} s/lap degradation{fallback_note}. "
+            f"Accounting for circuit pit stop time loss of {pit_loss_seconds:.1f}s, pitting at Lap {crossover_lap} yields "
+            f"a net race time saving of +{max_time_saved:.2f}s over staying out. Recommended pit window: Laps {w_start}–{w_end}."
+        )
+    else:
+        net_loss_str = f"{abs(max_time_saved):.2f}s" if max_time_saved > -90000 else "significant"
+        reasoning_text = (
+            f"Phase 1 Strategy Evaluation (Hold Position): Current {curr_compound} stint # {current_stint.stint} (degradation {d1:.4f} s/lap). "
+            f"With remaining race laps, pitting for alternate compound {alt_compound}{fallback_note} under green flag conditions "
+            f"would result in a net time loss of {net_loss_str} due to the {pit_loss_seconds:.1f}s pit stop loss constant. "
+            f"Recommendation: Hold position to race finish unless a VSC/Safety Car period occurs or tire degradation drastically accelerates."
+        )
 
     return PitRecommendationResponse(
         session_id=session_id,

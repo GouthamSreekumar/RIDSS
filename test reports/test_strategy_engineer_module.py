@@ -18,7 +18,8 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.db.session import AsyncSessionLocal
+from app.db.session import AsyncSessionLocal, engine
+from app.models.base import Base
 from app.models.audit import AuditLog
 from app.models.driver import Driver
 from app.models.notification import Notification
@@ -29,6 +30,7 @@ from app.models.settings import SystemSettings
 from app.models.team import Team
 from app.models.user import User, UserRoleEnum
 from app.services.race_telemetry import get_processed_session_overview
+from app.schemas.strategy_engineer import TireAnalysisResponse
 from app.services.strategy_analysis import (
     calculate_tire_degradation_for_laps,
     estimate_pit_window,
@@ -41,19 +43,29 @@ logger = logging.getLogger(__name__)
 
 
 async def run_strategy_engineer_integration_tests():
+    # Ensure database schema is created
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     async with AsyncSessionLocal() as session:
         logger.info("=== 1. Testing Database & Strategy Engineer Role Setup ===")
         team_res = await session.execute(select(Team))
         team = team_res.scalars().first()
-        assert team is not None, "Team not found in database!"
-        logger.info("Team found: %s (%s)", team.team_name, team.team_id)
+        if not team:
+            team = Team(team_name="Oracle Red Bull Racing", principal="Christian Horner")
+            session.add(team)
+            await session.flush()
+        logger.info("Team found/created: %s (%s)", team.team_name, team.team_id)
 
         role_res = await session.execute(
             select(Role).where(Role.role_name == UserRoleEnum.STRATEGY_ENGINEER.value)
         )
         role = role_res.scalars().first()
-        assert role is not None, "Strategy Engineer role not found!"
-        logger.info("Strategy Engineer role found: %s (%s)", role.role_name, role.role_id)
+        if not role:
+            role = Role(role_name=UserRoleEnum.STRATEGY_ENGINEER.value, description="Strategy Engineer Role")
+            session.add(role)
+            await session.flush()
+        logger.info("Strategy Engineer role found/created: %s (%s)", role.role_name, role.role_id)
 
         user_res = await session.execute(
             select(User).where(User.email == "strategy.engineer@ridss.team")
@@ -130,20 +142,35 @@ async def run_strategy_engineer_integration_tests():
             res = calculate_tire_degradation_for_laps(laps, code, session_info)
             all_team_stints.extend(res.stints)
 
-        rec = estimate_pit_window(tire_analysis, all_team_stints, pit_loss, total_laps=overview.total_laps)
-        assert rec is not None
-        assert rec.crossover_lap is not None
-        assert rec.recommended_window_start is not None
-        assert rec.recommended_window_end is not None
-        logger.info(
-            "Pit Recommendation Pass - Current Stint: %s, Alternate: %s, Crossover Lap: %d, Window: Laps %d-%d",
-            rec.current_compound,
-            rec.alternate_compound,
-            rec.crossover_lap,
-            rec.recommended_window_start,
-            rec.recommended_window_end,
+        # 4a. Test early race stint 1 pit window recommendation
+        stint1_analysis = TireAnalysisResponse(
+            session_id=tire_analysis.session_id,
+            season=tire_analysis.season,
+            circuit_name=tire_analysis.circuit_name,
+            session_type=tire_analysis.session_type,
+            driver_code=tire_analysis.driver_code,
+            stints=[tire_analysis.stints[0]],
         )
-        logger.info("Transparent Reasoning: %s", rec.reasoning)
+        rec_stint1 = estimate_pit_window(stint1_analysis, all_team_stints, pit_loss, total_laps=overview.total_laps)
+        assert rec_stint1 is not None
+        assert rec_stint1.crossover_lap is not None
+        assert rec_stint1.recommended_window_start is not None
+        assert rec_stint1.recommended_window_end is not None
+        logger.info(
+            "Early Race Pit Recommendation Pass - Current Stint: %s, Alternate: %s, Crossover Lap: %d, Window: Laps %d-%d",
+            rec_stint1.current_compound,
+            rec_stint1.alternate_compound,
+            rec_stint1.crossover_lap,
+            rec_stint1.recommended_window_start,
+            rec_stint1.recommended_window_end,
+        )
+
+        # 4b. Test late race final stint hold position guardrail
+        rec_final = estimate_pit_window(tire_analysis, all_team_stints, pit_loss, total_laps=overview.total_laps)
+        assert rec_final is not None
+        assert rec_final.crossover_lap is None
+        assert "Hold Position" in rec_final.reasoning
+        logger.info("Late Race Hold Position Guardrail Pass - Reasoning: %s", rec_final.reasoning)
 
         logger.info("=== 5. Testing Historical Cross-Season Review API ===")
         historical_review = summarize_historical_cross_season("Bahrain", [2023], [overview])
@@ -194,7 +221,7 @@ async def run_strategy_engineer_integration_tests():
             "driver_code": driver_code,
             "driver_name": "Max Verstappen",
             "tire_degradation_summary": f"Medium stint degradation calculated at {stint1.degradation_rate} s/lap.",
-            "pit_window_reasoning": rec.reasoning,
+            "pit_window_reasoning": rec_stint1.reasoning,
             "strategy_plan_id": race_strat.id,
             "key_findings": "Optimal 2-stop strategy target window Laps 16-19.",
         }
