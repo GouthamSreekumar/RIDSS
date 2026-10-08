@@ -610,9 +610,9 @@ async def get_race_strategies(
         .options(selectinload(RaceStrategy.creator))
         .where(RaceStrategy.team_id == team_id)
     )
-    if season is not None:
+    if season is not None and isinstance(season, int):
         query = query.where(RaceStrategy.season == season)
-    if round is not None:
+    if round is not None and isinstance(round, int):
         query = query.where(RaceStrategy.round == round)
 
     query = query.order_by(RaceStrategy.created_at.desc())
