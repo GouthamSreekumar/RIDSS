@@ -27,6 +27,9 @@ from app.schemas.strategy_engineer import (
     HistoricalStrategyReviewResponse,
     PitRecommendationResponse,
     StintDegradation,
+    StintEstimate,
+    StrategyComparisonItem,
+    StrategyComparisonResponse,
     TireAnalysisResponse,
     TireDegradationLap,
 )
@@ -386,13 +389,27 @@ def summarize_historical_cross_season(
     """
     Summarizes degradation and stint patterns across past seasons at a given circuit.
     Supports cross-year strategic review (e.g. "study Monaco 2020-2025 before this year's race").
+    Includes weather context (track temperature & rainfall flag) per season.
     """
     all_patterns: List[HistoricalStintPattern] = []
     compound_groups: Dict[str, List[Tuple[float, int, float]]] = {}
+    season_weather_map: Dict[int, Dict[str, Any]] = {}
 
     for overview in overviews:
         s_year = overview.season
         s_type = overview.session_name or "Race"
+
+        w_summary = overview.weather_summary
+        t_temp = w_summary.track_temp if w_summary else None
+        r_fall = w_summary.rainfall if w_summary else None
+
+        if s_year not in season_weather_map and w_summary:
+            season_weather_map[s_year] = {
+                "track_temp": w_summary.track_temp,
+                "rainfall": w_summary.rainfall,
+                "air_temp": w_summary.air_temp,
+                "humidity": w_summary.humidity,
+            }
 
         for d_code, laps in overview.driver_lap_summaries.items():
             analysis = calculate_tire_degradation_for_laps(
@@ -409,6 +426,8 @@ def summarize_historical_cross_season(
                     valid_laps=stint_res.valid_laps,
                     degradation_rate=stint_res.degradation_rate,
                     base_pace=stint_res.base_pace,
+                    track_temp=t_temp,
+                    rainfall=r_fall,
                 )
                 all_patterns.append(pattern)
 
@@ -442,4 +461,175 @@ def summarize_historical_cross_season(
         seasons=seasons,
         compound_summaries=compound_summaries,
         stints=all_patterns,
+        season_weather=season_weather_map,
     )
+
+
+def compare_race_strategies(
+    strategies: List[Any],
+    session_id: str,
+    circuit_name: str,
+    season: int,
+    pit_loss_seconds: float,
+    session_overview: Optional[SessionOverview] = None,
+    historical_review: Optional[HistoricalStrategyReviewResponse] = None,
+) -> StrategyComparisonResponse:
+    """
+    Phase 1 Deterministic Strategy Scenario Comparison:
+    Calculates total projected race time per plan derived from:
+      - Sum of each planned stint's length multiplied by degradation rate & base pace
+      - Plus configured pit-loss constant multiplied by number of planned stops.
+    Degradation data selection:
+      - Uses actual session degradation data if the session has occurred and lap data exists.
+      - Falls back to historical same-circuit data for that compound if session hasn't occurred.
+      - Falls back to default compound degradation model if no historical data exists.
+    Read/compute endpoint — nothing is persisted.
+    """
+    from app.schemas.strategy_engineer import StintEstimate, StrategyComparisonItem, StrategyComparisonResponse
+
+    # 1. Map actual session compound degradation rates if session data exists
+    actual_comp_deg: Dict[str, Tuple[float, float]] = {}
+    if session_overview and session_overview.driver_lap_summaries:
+        temp_comp_degs: Dict[str, List[float]] = {}
+        temp_comp_bases: Dict[str, List[float]] = {}
+        session_info = {
+            "session_id": session_id,
+            "season": season,
+            "circuit_name": circuit_name,
+            "session_type": "Race",
+        }
+        for d_code, laps in session_overview.driver_lap_summaries.items():
+            an = calculate_tire_degradation_for_laps(laps, d_code, session_info)
+            for st in an.stints:
+                if st.degradation_rate is not None and st.base_pace is not None:
+                    c = st.compound.upper()
+                    if c not in temp_comp_degs:
+                        temp_comp_degs[c] = []
+                        temp_comp_bases[c] = []
+                    temp_comp_degs[c].append(st.degradation_rate)
+                    temp_comp_bases[c].append(st.base_pace)
+
+        for c, degs in temp_comp_degs.items():
+            actual_comp_deg[c] = (round(float(np.mean(degs)), 4), round(float(np.mean(temp_comp_bases[c])), 3))
+
+    # 2. Map historical compound degradation rates if historical review is provided
+    hist_comp_deg: Dict[str, Tuple[float, float]] = {}
+    if historical_review and historical_review.compound_summaries:
+        for cs in historical_review.compound_summaries:
+            c = cs.compound.upper()
+            base = cs.avg_base_pace if cs.avg_base_pace is not None else 90.0
+            hist_comp_deg[c] = (cs.avg_degradation_rate, base)
+
+    compared_items: List[StrategyComparisonItem] = []
+
+    for strat in strategies:
+        strat_id = str(strat.id) if hasattr(strat, "id") else str(strat.get("id", "unknown"))
+        title = strat.plan.get("title") if (hasattr(strat, "plan") and isinstance(strat.plan, dict)) else (strat.get("title") if isinstance(strat, dict) else None)
+        d_code = strat.plan.get("driver_code") if (hasattr(strat, "plan") and isinstance(strat.plan, dict)) else (strat.get("driver_code") if isinstance(strat, dict) else None)
+        creator_name = strat.creator.full_name if (hasattr(strat, "creator") and strat.creator) else "Strategy Engineer"
+
+        stints_raw = []
+        if hasattr(strat, "plan") and isinstance(strat.plan, dict):
+            stints_raw = strat.plan.get("stints", [])
+        elif hasattr(strat, "plan") and isinstance(strat.plan, list):
+            stints_raw = strat.plan
+        elif isinstance(strat, dict):
+            stints_raw = strat.get("plan", [])
+
+        stops_count = max(0, len(stints_raw) - 1)
+        pit_loss_total = round(stops_count * pit_loss_seconds, 2)
+
+        stint_estimates: List[StintEstimate] = []
+        total_race_time = pit_loss_total
+
+        for idx, s in enumerate(stints_raw, start=1):
+            if isinstance(s, dict):
+                comp = str(s.get("compound", "MEDIUM")).upper()
+                s_lap = int(s.get("start_lap", 1))
+                e_lap = int(s.get("end_lap", 18))
+                target_pit = s.get("target_pit_lap")
+            else:
+                comp = str(getattr(s, "compound", "MEDIUM")).upper()
+                s_lap = int(getattr(s, "start_lap", 1))
+                e_lap = int(getattr(s, "end_lap", 18))
+                target_pit = getattr(s, "target_pit_lap", None)
+
+            stint_length = max(1, e_lap - s_lap + 1)
+
+            # Determine degradation rate and base pace source
+            if comp in actual_comp_deg:
+                deg_rate, base_pace = actual_comp_deg[comp]
+                source = "actual_session"
+            elif comp in hist_comp_deg:
+                deg_rate, base_pace = hist_comp_deg[comp]
+                source = "historical"
+            else:
+                defaults = COMPOUND_DEFAULTS.get(comp, {"base_delta": 0.0, "deg_rate": 0.055})
+                deg_rate = defaults["deg_rate"]
+                base_pace = 90.0 + defaults["base_delta"]
+                source = "default_fallback"
+
+            # Compute sum of projected lap times: Sum_{k=1..L} [ base_pace + deg_rate * k ]
+            # = L * base_pace + deg_rate * (L * (L + 1) / 2)
+            laps_sum = stint_length * (stint_length + 1) / 2.0
+            stint_proj_time = round(stint_length * base_pace + deg_rate * laps_sum, 2)
+
+            total_race_time += stint_proj_time
+
+            stint_estimates.append(
+                StintEstimate(
+                    stint_number=idx,
+                    compound=comp,
+                    start_lap=s_lap,
+                    end_lap=e_lap,
+                    stint_length=stint_length,
+                    target_pit_lap=target_pit,
+                    degradation_rate=deg_rate,
+                    base_pace=base_pace,
+                    stint_projected_time_seconds=stint_proj_time,
+                    degradation_source=source,
+                )
+            )
+
+        total_race_time_rounded = round(total_race_time, 2)
+        mins = int(total_race_time_rounded // 60)
+        secs = total_race_time_rounded % 60
+        if mins >= 60:
+            hrs = mins // 60
+            m = mins % 60
+            time_str = f"{hrs}h {m}m {secs:04.1f}s"
+        else:
+            time_str = f"{mins}m {secs:04.1f}s"
+
+        compared_items.append(
+            StrategyComparisonItem(
+                strategy_id=strat_id,
+                title=title,
+                driver_code=d_code,
+                created_by_name=creator_name,
+                stops_count=stops_count,
+                pit_loss_total_seconds=pit_loss_total,
+                total_projected_time_seconds=total_race_time_rounded,
+                total_projected_time_str=time_str,
+                stint_estimates=stint_estimates,
+                is_lowest_time=False,
+                estimation_label="Estimated — based on current degradation model, not a guarantee",
+            )
+        )
+
+    # Highlight strategy with lowest total projected time
+    if compared_items:
+        min_time = min(item.total_projected_time_seconds for item in compared_items)
+        for item in compared_items:
+            if item.total_projected_time_seconds == min_time:
+                item.is_lowest_time = True
+
+    return StrategyComparisonResponse(
+        session_id=session_id,
+        circuit_name=circuit_name,
+        season=season,
+        pit_loss_seconds=pit_loss_seconds,
+        compared_strategies=compared_items,
+        disclaimer="Estimated — based on current degradation model, not a guarantee",
+    )
+

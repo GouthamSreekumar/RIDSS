@@ -44,6 +44,10 @@ class TireAnalysisResponse(BaseModel):
     session_type: str
     driver_code: str
     stints: List[StintDegradation] = Field(default_factory=list)
+    track_temp: Optional[float] = Field(None, description="Average track temperature in °C during session")
+    rainfall: Optional[bool] = Field(None, description="Rainfall indicator during session")
+    air_temp: Optional[float] = Field(None, description="Average air temperature in °C during session")
+    humidity: Optional[float] = Field(None, description="Average humidity percentage during session")
 
 
 class PitRecommendationResponse(BaseModel):
@@ -95,6 +99,8 @@ class HistoricalStintPattern(BaseModel):
     valid_laps: int
     degradation_rate: Optional[float] = None
     base_pace: Optional[float] = None
+    track_temp: Optional[float] = Field(None, description="Track temperature in °C for that season")
+    rainfall: Optional[bool] = Field(None, description="Rainfall flag for that season")
 
 
 class HistoricalCompoundSummary(BaseModel):
@@ -110,6 +116,53 @@ class HistoricalStrategyReviewResponse(BaseModel):
     seasons: List[int]
     compound_summaries: List[HistoricalCompoundSummary] = Field(default_factory=list)
     stints: List[HistoricalStintPattern] = Field(default_factory=list)
+    season_weather: Dict[int, Dict[str, Any]] = Field(
+        default_factory=dict, description="Track temp and weather data per season"
+    )
+
+
+class StintEstimate(BaseModel):
+    stint_number: int
+    compound: str
+    start_lap: int
+    end_lap: int
+    stint_length: int
+    target_pit_lap: Optional[int] = None
+    degradation_rate: float
+    base_pace: float
+    stint_projected_time_seconds: float
+    degradation_source: str = Field(
+        "historical", description="Data source used: 'actual_session', 'historical', or 'default_fallback'"
+    )
+
+
+class StrategyComparisonItem(BaseModel):
+    strategy_id: str
+    title: Optional[str] = None
+    driver_code: Optional[str] = None
+    created_by_name: str
+    stops_count: int
+    pit_loss_total_seconds: float
+    total_projected_time_seconds: float
+    total_projected_time_str: str
+    stint_estimates: List[StintEstimate] = Field(default_factory=list)
+    is_lowest_time: bool = False
+    estimation_label: str = Field(
+        "Estimated — based on current degradation model, not a guarantee",
+        description="Phase 1 deterministic estimate framing label"
+    )
+
+
+class StrategyComparisonResponse(BaseModel):
+    session_id: str
+    circuit_name: str
+    season: int
+    pit_loss_seconds: float
+    compared_strategies: List[StrategyComparisonItem] = Field(default_factory=list)
+    disclaimer: str = Field(
+        "Estimated — based on current degradation model, not a guarantee",
+        description="Global disclaimer label for deterministic estimate"
+    )
 
 
 class StintPlan(BaseModel):

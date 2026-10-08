@@ -589,13 +589,18 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
 
         # Process Weather
         weather_summary = None
-        if hasattr(session, "weather_data") and not session.weather_data.empty:
-            w = session.weather_data.iloc[-1]
+        if hasattr(session, "weather_data") and session.weather_data is not None and not session.weather_data.empty:
+            w_df = session.weather_data
+            mean_track = w_df["TrackTemp"].mean() if "TrackTemp" in w_df and pd.notna(w_df["TrackTemp"].mean()) else None
+            mean_air = w_df["AirTemp"].mean() if "AirTemp" in w_df and pd.notna(w_df["AirTemp"].mean()) else None
+            mean_hum = w_df["Humidity"].mean() if "Humidity" in w_df and pd.notna(w_df["Humidity"].mean()) else None
+            has_rain = bool((w_df["Rainfall"] == True).any()) if "Rainfall" in w_df else False
+            
             weather_summary = WeatherSummary(
-                air_temp=_clean_val(w.get("AirTemp")),
-                track_temp=_clean_val(w.get("TrackTemp")),
-                humidity=_clean_val(w.get("Humidity")),
-                rainfall=bool(_clean_val(w.get("Rainfall"), False)),
+                air_temp=round(float(mean_air), 1) if mean_air is not None else None,
+                track_temp=round(float(mean_track), 1) if mean_track is not None else None,
+                humidity=round(float(mean_hum), 1) if mean_hum is not None else None,
+                rainfall=has_rain,
             )
 
         session_id = f"{season}_{circuit_name.lower().replace(' ', '_')}_{session_type.lower()}"

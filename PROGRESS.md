@@ -128,7 +128,13 @@ Last updated: 2026-08-16
 - [x] RaceStrategy table + create/view API + page
 - [x] Strategy report generation (shared Report table, audit log, driver notification)
 - [x] Strategy Engineer role/permissions scoped to strategy-only
-- [x] Design tokens consistent with other modules
+## Strategy Engineer Module — Scenario Comparison & Weather
+- [x] Scenario comparison API (computed from existing RaceStrategy + degradation data)
+- [x] Scenario comparison UI (side-by-side plans, labeled as estimate)
+- [x] Weather data threaded through from shared Race Engineer function to Strategy Engineer
+- [x] Track temp/rainfall shown on tire analysis screen
+- [x] Track temp shown alongside degradation rate on historical cross-season view
+
 
 
 

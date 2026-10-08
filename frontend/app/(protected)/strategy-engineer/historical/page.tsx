@@ -4,12 +4,14 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Calendar,
+  CloudRain,
   Compass,
   History,
   Info,
   Layers,
   RefreshCw,
   Search,
+  Thermometer,
   TrendingDown,
 } from "lucide-react";
 import axiosInstance from "@/lib/axios";
@@ -33,6 +35,8 @@ interface HistoricalStintPattern {
   valid_laps: number;
   degradation_rate?: number;
   base_pace?: number;
+  track_temp?: number;
+  rainfall?: boolean;
 }
 
 interface HistoricalStrategyReviewResponse {
@@ -40,6 +44,7 @@ interface HistoricalStrategyReviewResponse {
   seasons: number[];
   compound_summaries: HistoricalCompoundSummary[];
   stints: HistoricalStintPattern[];
+  season_weather?: Record<number, { track_temp?: number; rainfall?: boolean; air_temp?: number; humidity?: number }>;
 }
 
 async function fetchHistoricalReview(
@@ -195,11 +200,36 @@ export default function HistoricalStrategyReviewPage() {
             </div>
           </div>
 
+          {/* Year-over-Year Season Weather Context Banner */}
+          {review.season_weather && Object.keys(review.season_weather).length > 0 && (
+            <div className="border border-slate-800 bg-slate-surface p-4 border-l-2 border-l-amber-500 font-mono text-xs space-y-2">
+              <div className="flex items-center gap-2 text-slate-300 font-semibold uppercase tracking-wider text-[11px]">
+                <Thermometer size={13} className="text-amber-400" />
+                Year-over-Year Season Weather Context ({review.circuit})
+              </div>
+              <div className="flex flex-wrap gap-3 pt-1">
+                {Object.entries(review.season_weather).map(([yr, w]) => (
+                  <div key={yr} className="bg-slate-950 px-3 py-1.5 border border-slate-800 flex items-center gap-2 text-xs">
+                    <span className="font-bold text-emerald-400">{yr} Season:</span>
+                    <span className="text-amber-300 font-semibold">
+                      Track Temp {w.track_temp !== undefined && w.track_temp !== null ? `${w.track_temp}°C` : "N/A"}
+                    </span>
+                    {w.rainfall && (
+                      <span className="sharp-tag border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.2 text-[10px] text-cyan-300">
+                        Rain
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Historical Stints Data Table */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 font-mono">
-                Historical Stint Breakdown
+                Historical Stint Breakdown & Weather Context
               </h2>
               <div className="relative w-64">
                 <Search size={13} className="absolute left-2.5 top-2.5 text-slate-500" />
@@ -225,13 +255,14 @@ export default function HistoricalStrategyReviewPage() {
                       <th className="py-3 px-4 font-medium">Total laps</th>
                       <th className="py-3 px-4 font-medium">Valid laps</th>
                       <th className="py-3 px-4 font-medium">Degradation rate</th>
+                      <th className="py-3 px-4 font-medium">Track temp</th>
                       <th className="py-3 px-4 font-medium">Base pace</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 text-slate-300">
                     {filteredStints.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="py-8 text-center text-slate-500 font-sans">
+                        <td colSpan={9} className="py-8 text-center text-slate-500 font-sans">
                           No historical stint patterns found matching criteria.
                         </td>
                       </tr>
@@ -244,8 +275,12 @@ export default function HistoricalStrategyReviewPage() {
                           <td className="py-3 px-4 font-semibold">{stint.compound}</td>
                           <td className="py-3 px-4">{stint.total_laps}</td>
                           <td className="py-3 px-4 text-emerald-300">{stint.valid_laps}</td>
-                          <td className="py-3 px-4 text-amber-300">
+                          <td className="py-3 px-4 text-amber-300 font-semibold">
                             {formatDegradationRate(stint.degradation_rate, 4)}
+                          </td>
+                          <td className="py-3 px-4 text-amber-200">
+                            {stint.track_temp !== undefined && stint.track_temp !== null ? `${stint.track_temp}°C` : "—"}
+                            {stint.rainfall && <span className="ml-1 text-[10px] text-cyan-400 font-sans font-semibold">(Rain)</span>}
                           </td>
                           <td className="py-3 px-4 text-purple-300">
                             {stint.base_pace !== undefined && stint.base_pace !== null

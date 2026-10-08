@@ -24,6 +24,8 @@ from app.schemas.strategy_engineer import (
     PitRecommendationResponse,
     RaceStrategyCreate,
     RaceStrategyResponse,
+    StintPlan,
+    StrategyComparisonResponse,
     StrategyEngineerDashboard,
     StrategyReportCreate,
     StrategyReportResponse,
@@ -36,6 +38,7 @@ from app.services.race_telemetry import (
 )
 from app.services.strategy_analysis import (
     calculate_tire_degradation_for_laps,
+    compare_race_strategies,
     estimate_pit_window,
     get_circuit_pit_loss,
     summarize_historical_cross_season,
@@ -231,6 +234,13 @@ async def get_tire_analysis(
     }
 
     result = calculate_tire_degradation_for_laps(driver_laps, driver_code_upper, session_info)
+
+    if overview.weather_summary:
+        result.track_temp = overview.weather_summary.track_temp
+        result.rainfall = overview.weather_summary.rainfall
+        result.air_temp = overview.weather_summary.air_temp
+        result.humidity = overview.weather_summary.humidity
+
     return result
 
 
@@ -395,6 +405,102 @@ async def create_race_strategy(
         plan=[StintPlan(**s) for s in plan_data.get("stints", [])],
         created_at=new_strategy.created_at,
     )
+
+
+@router.get("/strategies/compare", response_model=StrategyComparisonResponse)
+async def compare_race_strategies_endpoint(
+    session_id: Optional[str] = Query(None, description="Optional session slug filter"),
+    strategy_ids: List[str] = Query(..., description="List or comma-separated list of RaceStrategy UUIDs"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("strategy:read")),
+) -> StrategyComparisonResponse:
+    """
+    Side-by-side strategy scenario comparison endpoint.
+    Accepts two or more RaceStrategy IDs for the same session.
+    Calculates total projected race time per plan derived from stint degradation and pit stop loss constant.
+    Read/compute endpoint — nothing is persisted.
+    """
+    team_id = _ensure_strategy_team(current_user)
+
+    cleaned_ids: List[str] = []
+    for sid in strategy_ids:
+        if "," in sid:
+            cleaned_ids.extend([item.strip() for item in sid.split(",") if item.strip()])
+        elif sid.strip():
+            cleaned_ids.append(sid.strip())
+
+    if len(cleaned_ids) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least two strategy IDs are required for side-by-side scenario comparison.",
+        )
+
+    res = await db.execute(
+        select(RaceStrategy)
+        .options(selectinload(RaceStrategy.creator))
+        .where(RaceStrategy.id.in_(cleaned_ids), RaceStrategy.team_id == team_id)
+    )
+    strategies = res.scalars().all()
+
+    if len(strategies) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Could not find at least two valid race strategies belonging to your team with the provided IDs.",
+        )
+
+    target_session_id = session_id or strategies[0].session_id
+    for s in strategies:
+        if s.session_id != target_session_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"All strategies compared must belong to the same session. Strategy '{s.id}' belongs to '{s.session_id}', expected '{target_session_id}'.",
+            )
+
+    season, circuit_name, session_type = _parse_session_slug(target_session_id)
+    pit_loss = await get_circuit_pit_loss(db, circuit_name)
+
+    session_overview = None
+    try:
+        session_overview = await get_processed_session_overview(
+            db=db,
+            season=season,
+            circuit_name=circuit_name,
+            session_type=session_type,
+            team_id=team_id,
+        )
+    except Exception as exc:
+        logger.warning("Could not load actual session overview for strategy comparison %s: %s", target_session_id, exc)
+
+    historical_review = None
+    try:
+        available_seasons = telemetry_provider.get_seasons()
+        past_seasons = [s for s in available_seasons if s <= season]
+        if not past_seasons:
+            past_seasons = available_seasons[-2:]
+        overviews = []
+        for s_yr in past_seasons:
+            try:
+                ov = await get_processed_session_overview(
+                    db=db, season=s_yr, circuit_name=circuit_name, session_type="Race", team_id=team_id
+                )
+                overviews.append(ov)
+            except Exception:
+                pass
+        historical_review = summarize_historical_cross_season(circuit_name, past_seasons, overviews)
+    except Exception as exc:
+        logger.warning("Could not load historical review for circuit %s: %s", circuit_name, exc)
+
+    result = compare_race_strategies(
+        strategies=strategies,
+        session_id=target_session_id,
+        circuit_name=circuit_name,
+        season=season,
+        pit_loss_seconds=pit_loss,
+        session_overview=session_overview,
+        historical_review=historical_review,
+    )
+
+    return result
 
 
 @router.get("/strategies", response_model=List[RaceStrategyResponse])

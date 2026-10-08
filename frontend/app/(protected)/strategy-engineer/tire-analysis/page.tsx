@@ -8,11 +8,13 @@ import {
   Calendar,
   CheckCircle2,
   ChevronRight,
+  CloudRain,
   Compass,
   Filter,
   Info,
   Layers,
   RefreshCw,
+  Thermometer,
   TrendingDown,
   TrendingUp,
   User,
@@ -55,6 +57,10 @@ interface TireAnalysisResponse {
   session_type: string;
   driver_code: string;
   stints: StintDegradation[];
+  track_temp?: number;
+  rainfall?: boolean;
+  air_temp?: number;
+  humidity?: number;
 }
 
 interface CircuitSummary {
@@ -246,6 +252,35 @@ export default function TireAnalysisPage() {
         </div>
       ) : (
         <div className="space-y-6">
+          {/* Session Weather Context Line */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border border-slate-800 bg-slate-surface/80 px-4 py-2.5 font-mono text-xs text-slate-400">
+            <div className="flex items-center gap-4">
+              <span className="text-slate-500 uppercase tracking-wider text-[11px] font-semibold">Session Weather Context:</span>
+              <span className="flex items-center gap-1.5 text-slate-200">
+                <Thermometer size={13} className="text-amber-400" />
+                Track temp: <strong className="text-amber-300 font-semibold">{analysis.track_temp !== undefined && analysis.track_temp !== null ? `${analysis.track_temp}°C` : "N/A"}</strong>
+              </span>
+              {analysis.air_temp !== undefined && analysis.air_temp !== null && (
+                <span className="text-slate-400 border-l border-slate-800 pl-3">
+                  Air temp: <strong className="text-slate-200">{analysis.air_temp}°C</strong>
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="flex items-center gap-1.5 text-slate-300">
+                <CloudRain size={13} className={analysis.rainfall ? "text-cyan-400" : "text-slate-500"} />
+                Status:{" "}
+                {analysis.rainfall ? (
+                  <span className="sharp-tag border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-300 font-semibold">
+                    Rainfall Reported
+                  </span>
+                ) : (
+                  <span className="text-slate-300">Dry Track</span>
+                )}
+              </span>
+            </div>
+          </div>
+
           {/* Stints Overview Summary Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {analysis.stints.map((stint) => (
