@@ -20,7 +20,7 @@ import {
   Zap,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import axiosInstance from "@/lib/axios";
 import { FastF1LoadingSkeleton } from "@/components/race-engineer/FastF1LoadingSkeleton";
 import { SavedComparisonsList } from "@/components/race-engineer/SavedComparisonsManager";
@@ -579,9 +579,14 @@ function SessionLapChart({
 }
 
 export default function TelemetryOverviewPage() {
-  const [season, setSeason] = useState<number>(2024);
-  const [circuit, setCircuit] = useState<string>("Bahrain");
-  const [sessionType, setSessionType] = useState<string>("Race");
+  const searchParams = useSearchParams();
+  const initialSeason = searchParams.get("season") ? parseInt(searchParams.get("season")!) || 2024 : 2024;
+  const initialCircuit = searchParams.get("circuit") || "Bahrain";
+  const initialSessionType = searchParams.get("session_type") || "Race";
+
+  const [season, setSeason] = useState<number>(initialSeason);
+  const [circuit, setCircuit] = useState<string>(initialCircuit);
+  const [sessionType, setSessionType] = useState<string>(initialSessionType);
   const [selectedDriver, setSelectedDriver] = useState<string>("");
 
   // Fetch Season Circuits dynamically from FastF1 backend

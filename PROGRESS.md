@@ -136,6 +136,15 @@ Last updated: 2026-08-16
 - [x] Track temp shown alongside degradation rate on historical cross-season view
 - [x] Next-season fallback and empty-state message for the event picker.
 
+## Strategy Engineer — Degradation Model v2
+- [x] In-laps, out-laps, race-start lap, IsAccurate=False excluded with visible reasons
+- [x] Minimum-clean-laps rule (5) with "Insufficient clean laps" state
+- [x] Configurable fuel effect setting (default 0.05 s/lap, labelled approximation)
+- [x] Raw + fuel-corrected rates, model_version in API and report snapshots
+- [x] UI shows corrected (primary) and raw (secondary) rates
+- [x] Old reports preserved and labelled as earlier model
+- [x] Downstream consumers verified (pit window, comparison, historical)
+
 
 
 

@@ -34,6 +34,7 @@ interface StrategyReport {
     strategy_plan_id?: string;
     key_findings?: string;
     custom_data?: Record<string, any>;
+    model_version?: number;
   };
 }
 
@@ -181,7 +182,12 @@ export default function StrategyReportsPage() {
                       #{report.report_id.slice(0, 8)}
                     </td>
                     <td className="py-3.5 px-4 text-slate-200">
-                      {report.data?.session_id || "Session Report"}
+                      <div>{report.data?.session_id || "Session Report"}</div>
+                      {(!report.data?.model_version || report.data.model_version < 2) && (
+                        <span className="text-[10px] text-slate-400 font-mono italic">
+                          calculated with earlier model
+                        </span>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 font-semibold text-slate-100 font-sans">
                       {report.data?.driver_name || report.data?.driver_code || "Team Driver"}

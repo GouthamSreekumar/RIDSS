@@ -31,10 +31,19 @@ class StintDegradation(BaseModel):
     excluded_laps_count: int
     excluded_lap_numbers: List[ExcludedLapDetail] = Field(default_factory=list)
     degradation_rate: Optional[float] = Field(
-        None, description="Tire degradation rate in seconds per lap (slope of OLS linear fit)"
+        None, description="Fuel-corrected tire degradation rate in seconds per lap (slope + fuel_effect)"
+    )
+    degradation_rate_raw: Optional[float] = Field(
+        None, description="Raw tire degradation rate in seconds per lap (OLS linear fit before fuel correction)"
+    )
+    degradation_rate_fuel_corrected: Optional[float] = Field(
+        None, description="Fuel-corrected tire degradation rate in seconds per lap"
     )
     base_pace: Optional[float] = Field(
         None, description="Estimated base pace on fresh tires (intercept of OLS linear fit)"
+    )
+    status_message: Optional[str] = Field(
+        None, description="Status message e.g. 'Insufficient clean laps' when valid_laps < 5"
     )
     laps: List[TireDegradationLap] = Field(default_factory=list)
 
@@ -50,6 +59,8 @@ class TireAnalysisResponse(BaseModel):
     rainfall: Optional[bool] = Field(None, description="Rainfall indicator during session")
     air_temp: Optional[float] = Field(None, description="Average air temperature in °C during session")
     humidity: Optional[float] = Field(None, description="Average humidity percentage during session")
+    model_version: int = Field(2, description="Degradation model version (v2 includes expanded exclusions & fuel correction)")
+    fuel_effect_seconds_per_lap: float = Field(0.05, description="Configured fuel burn effect constant in seconds per lap")
 
 
 # ── Pre-race planning reference ───────────────────────────────────────────────

@@ -46,7 +46,10 @@ interface StintDegradation {
   excluded_laps_count: number;
   excluded_lap_numbers: ExcludedLapDetail[];
   degradation_rate?: number;
+  degradation_rate_raw?: number;
+  degradation_rate_fuel_corrected?: number;
   base_pace?: number;
+  status_message?: string;
   laps: TireDegradationLap[];
 }
 
@@ -61,6 +64,8 @@ interface TireAnalysisResponse {
   rainfall?: boolean;
   air_temp?: number;
   humidity?: number;
+  model_version?: number;
+  fuel_effect_seconds_per_lap?: number;
 }
 
 interface CircuitSummary {
@@ -94,10 +99,17 @@ async function fetchTireAnalysis(
   return res.data;
 }
 
-const formatDegradationRate = (val?: number | null, decimals = 4): string => {
-  if (val === undefined || val === null) return "N/A (<2 laps)";
+const formatSignRate = (val?: number | null, decimals = 4): string => {
+  if (val === undefined || val === null) return "N/A";
   const formatted = val.toFixed(decimals);
-  return val >= 0 ? `+${formatted} s/lap` : `${formatted} s/lap`;
+  if (val > 0) return `+${formatted}`;
+  return formatted;
+};
+
+const formatDegradationRate = (val?: number | null, decimals = 4, statusMsg?: string | null): string => {
+  if (statusMsg) return statusMsg;
+  if (val === undefined || val === null) return "N/A (<5 laps)";
+  return `${formatSignRate(val, decimals)} s/lap`;
 };
 
 export default function TireAnalysisPage() {
@@ -164,7 +176,7 @@ export default function TireAnalysisPage() {
             Stint tire degradation analysis
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Calculates degradation rate (slope: s/lap) and base pace (intercept) per stint. Deleted laps and Safety Car / VSC caution periods are strictly excluded.
+            Calculates tire degradation rate (lap time increase in s/lap, where positive values +s/lap represent pace lost per lap as tires wear) and base pace (intercept) per stint.
           </p>
         </div>
 
@@ -299,10 +311,28 @@ export default function TireAnalysisPage() {
 
                 <div className="grid grid-cols-2 gap-3 bg-slate-950 p-3 border border-slate-800 font-mono text-xs">
                   <div>
-                    <span className="text-slate-500 text-[11px] block">Degradation rate</span>
-                    <span className="text-slate-100 font-bold text-sm">
-                      {formatDegradationRate(stint.degradation_rate, 4)}
-                    </span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-slate-500 text-[11px]">Degradation rate</span>
+                      <span className="text-[10px] text-slate-400 font-normal">(+ = pace loss)</span>
+                    </div>
+                    {stint.status_message ? (
+                      <span className="text-amber-400 font-bold text-xs">{stint.status_message}</span>
+                    ) : (
+                      <div>
+                        <span className="text-slate-100 font-bold text-sm">
+                          {formatDegradationRate(stint.degradation_rate_fuel_corrected ?? stint.degradation_rate, 4, stint.status_message)}
+                        </span>
+                        {stint.degradation_rate_raw !== undefined && stint.degradation_rate_raw !== null && (
+                          <div
+                            title={`Fuel Correction: Fuel burn (~${analysis.fuel_effect_seconds_per_lap ?? 0.05} s/lap) added to raw OLS slope. Fuel effect varies by circuit & season.`}
+                            className="text-[10px] text-slate-400 font-mono flex items-center gap-1 cursor-help mt-0.5"
+                          >
+                            <span>Raw: {formatSignRate(stint.degradation_rate_raw, 4)} s/lap</span>
+                            <Info size={10} className="text-slate-500" />
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div>
                     <span className="text-slate-500 text-[11px] block">Base pace (intercept)</span>

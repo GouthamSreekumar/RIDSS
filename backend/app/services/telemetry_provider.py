@@ -657,6 +657,7 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
 
         points: List[TelemetryPoint] = []
         if not telemetry_df.empty:
+            first_time = telemetry_df.iloc[0].get("Time")
             for idx, row in telemetry_df.iterrows():
                 x_val = _clean_val(row.get("X"), 0.0)
                 y_val = _clean_val(row.get("Y"), 0.0)
@@ -676,10 +677,13 @@ class FastF1TelemetryProvider(AbstractRaceTelemetryProvider):
                 except Exception:
                     drs_int = 0
 
+                raw_t = row.get("Time")
+                rel_t = (raw_t - first_time) if (raw_t is not None and first_time is not None and not pd.isna(raw_t) and not pd.isna(first_time)) else raw_t
+
                 points.append(
                     TelemetryPoint(
                         distance=round(float(_clean_val(row.get("Distance"), 0.0)), 2),
-                        time_seconds=_timedelta_to_seconds(row.get("Time")) or 0.0,
+                        time_seconds=_timedelta_to_seconds(rel_t) or 0.0,
                         speed=round(float(_clean_val(row.get("Speed"), 0.0)), 1),
                         rpm=int(_clean_val(row.get("RPM"), 0)),
                         throttle=round(float(_clean_val(row.get("Throttle"), 0.0)), 1),

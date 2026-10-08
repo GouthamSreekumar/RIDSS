@@ -86,23 +86,38 @@ def _is_caution_lap(track_status: Optional[str]) -> Tuple[bool, Optional[str]]:
     return True, ", ".join(reasons)
 
 
+DEFAULT_FUEL_EFFECT_SECONDS_PER_LAP = 0.05
+
+
 def calculate_tire_degradation_for_laps(
-    driver_laps: List[LapSummary], driver_code: str, session_info: Dict[str, Any]
+    driver_laps: List[LapSummary],
+    driver_code: str,
+    session_info: Dict[str, Any],
+    fuel_effect_seconds_per_lap: float = 0.05,
 ) -> TireAnalysisResponse:
     """
-    Phase 1 Deterministic Tire Degradation Analysis:
-    For each stint run by a driver in a session, fits a simple linear trend of LapTime vs TyreLife:
-      LapTime(t) = slope * TyreLife + intercept
+    Phase 1 Deterministic Tire Degradation Analysis (Model v2):
+    For each stint run by a driver in a session, fits a simple linear trend of LapTime vs TyreLife.
 
-    Formula (Ordinary Least Squares Linear Regression):
-      N = number of valid laps
-      slope = [ N * sum(x_i * y_i) - sum(x_i) * sum(y_i) ] / [ N * sum(x_i^2) - (sum(x_i))^2 ]
-      intercept = [ sum(y_i) - slope * sum(x_i) ] / N
-
-    EXCLUSION CRITERIA (Data Quality Design):
+    EXCLUSION CRITERIA (Model v2 Data Quality Audit):
       1. Deleted laps (`deleted == True`) — e.g. track limits violations.
       2. Caution / Safety Car / VSC laps (`track_status != '1'`).
-      Including caution laps would severely distort the degradation rate (fabricated low pace).
+      3. Pit out-laps (`pit_out_time_str` present) -> "Out-lap"
+      4. Pit in-laps (`pit_in_time_str` present) -> "In-lap"
+      5. Race start lap (`lap_number == 1`) -> "Race start lap"
+      6. FastF1 inaccurate timing (`is_accurate == False`) -> "Timing flagged inaccurate"
+      7. Invalid or missing lap times.
+
+    MINIMUM CLEAN LAPS RULE:
+      Requires at least 5 valid clean laps in a stint to fit an OLS regression line.
+      If valid_laps < 5, degradation_rate is set to None and status_message is set to "Insufficient clean laps".
+
+    FUEL CORRECTION (Additive, Transparent Approximation):
+      Fuel burned per lap reduces vehicle mass, improving raw lap time over time.
+      Fuel-corrected rate = raw OLS slope + fuel_effect_seconds_per_lap.
+      The primary `degradation_rate` field carries the fuel-corrected value so downstream
+      consumers (pit window estimation, scenario comparison, cross-season review) automatically
+      utilize the fuel-corrected baseline.
     """
     if not driver_laps:
         return TireAnalysisResponse(
@@ -112,6 +127,8 @@ def calculate_tire_degradation_for_laps(
             session_type=session_info.get("session_type", "Race"),
             driver_code=driver_code,
             stints=[],
+            model_version=2,
+            fuel_effect_seconds_per_lap=fuel_effect_seconds_per_lap,
         )
 
     # Group laps by stint
@@ -147,6 +164,22 @@ def calculate_tire_degradation_for_laps(
                 is_excluded = True
                 exclusion_reasons.append(caution_reason)
 
+            if lap.pit_out_time_str:
+                is_excluded = True
+                exclusion_reasons.append("Out-lap")
+
+            if lap.pit_in_time_str:
+                is_excluded = True
+                exclusion_reasons.append("In-lap")
+
+            if lap.lap_number == 1:
+                is_excluded = True
+                exclusion_reasons.append("Race start lap")
+
+            if not lap.is_accurate:
+                is_excluded = True
+                exclusion_reasons.append("Timing flagged inaccurate")
+
             if lap.lap_time_seconds is None or lap.lap_time_seconds <= 0:
                 is_excluded = True
                 exclusion_reasons.append("Missing / invalid lap time")
@@ -175,16 +208,21 @@ def calculate_tire_degradation_for_laps(
             )
 
         # OLS Linear Regression for slope (degradation rate) and intercept (base pace)
-        deg_rate: Optional[float] = None
+        deg_rate_raw: Optional[float] = None
+        deg_rate_fuel: Optional[float] = None
         base_pace: Optional[float] = None
+        status_message: Optional[str] = None
 
-        if len(valid_x) >= 2:
+        if len(valid_x) < 5:
+            status_message = "Insufficient clean laps"
+        else:
             x_arr = np.array(valid_x, dtype=float)
             y_arr = np.array(valid_y, dtype=float)
             x_var = np.var(x_arr)
             if x_var > 0:
-                slope, intercept = np.polyfit(x_arr, y_arr, 1)
-                deg_rate = round(float(slope), 4)
+                slope_raw, intercept = np.polyfit(x_arr, y_arr, 1)
+                deg_rate_raw = round(float(slope_raw), 4)
+                deg_rate_fuel = round(float(slope_raw + fuel_effect_seconds_per_lap), 4)
                 base_pace = round(float(intercept), 3)
 
         stint_analyses.append(
@@ -195,8 +233,11 @@ def calculate_tire_degradation_for_laps(
                 valid_laps=len(valid_x),
                 excluded_laps_count=len(excluded_details),
                 excluded_lap_numbers=excluded_details,
-                degradation_rate=deg_rate,
+                degradation_rate=deg_rate_fuel,
+                degradation_rate_raw=deg_rate_raw,
+                degradation_rate_fuel_corrected=deg_rate_fuel,
                 base_pace=base_pace,
+                status_message=status_message,
                 laps=processed_laps,
             )
         )
@@ -208,7 +249,25 @@ def calculate_tire_degradation_for_laps(
         session_type=session_info.get("session_type", "Race"),
         driver_code=driver_code.upper(),
         stints=stint_analyses,
+        model_version=2,
+        fuel_effect_seconds_per_lap=fuel_effect_seconds_per_lap,
     )
+
+
+async def get_fuel_effect_seconds_per_lap(db: AsyncSession) -> float:
+    """
+    Fetches the configurable fuel effect constant in seconds per lap from SystemSettings table.
+    Keys: `fuel_effect_seconds_per_lap` -> fallback `0.05` s/lap.
+    Documented as an approximation (fuel burned per lap x time gained per kg), not measured data.
+    """
+    try:
+        res = await db.execute(select(SystemSettings).where(SystemSettings.key == "fuel_effect_seconds_per_lap"))
+        setting = res.scalar_one_or_none()
+        if setting and setting.value:
+            return float(setting.value)
+    except Exception as exc:
+        logger.warning("Could not read fuel_effect_seconds_per_lap setting: %s", exc)
+    return DEFAULT_FUEL_EFFECT_SECONDS_PER_LAP
 
 
 async def get_circuit_pit_loss(db: AsyncSession, circuit_name: str) -> float:

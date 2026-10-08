@@ -276,16 +276,48 @@ export default function LapTelemetryPage({
   const resolvedParams = use(params);
   const router = useRouter();
 
-  // Parse session string: e.g. "2024_bahrain_race" or "2026_british%20grand%20prix_race"
+  const searchParams = useSearchParams();
+
+  // Parse session parameters: searchParams take precedence over route params slug
   const decodedSession = decodeURIComponent(resolvedParams.session);
   const sessionParts = decodedSession.split("_");
-  const season = parseInt(sessionParts[0]) || 2024;
-  const sessionType = (sessionParts.slice(-1)[0] || "Race").replace(/^\w/, (c) => c.toUpperCase());
-  const rawCircuit = sessionParts.slice(1, -1).join(" ") || "Bahrain";
-  const circuit = rawCircuit.replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const querySeason = searchParams.get("season");
+  const queryCircuit = searchParams.get("circuit");
+  const querySessionType = searchParams.get("session_type");
+
+  let season: number;
+  if (querySeason) {
+    season = parseInt(querySeason) || 2024;
+  } else if (sessionParts.length >= 3 && !isNaN(parseInt(sessionParts[0]))) {
+    season = parseInt(sessionParts[0]);
+  } else {
+    season = 2024;
+  }
+
+  let circuit: string;
+  if (queryCircuit) {
+    circuit = queryCircuit;
+  } else if (sessionParts.length >= 3) {
+    const rawCircuit = sessionParts.slice(1, -1).join(" ") || "Bahrain";
+    circuit = rawCircuit.replace(/\b\w/g, (c) => c.toUpperCase());
+  } else {
+    circuit = "Bahrain";
+  }
+
+  let sessionType: string;
+  if (querySessionType) {
+    sessionType = querySessionType;
+  } else if (sessionParts.length > 0) {
+    sessionType = sessionParts[sessionParts.length - 1];
+  } else {
+    sessionType = "Race";
+  }
+  sessionType = sessionType.replace(/^\w/, (c) => c.toUpperCase());
 
   const driverCode = resolvedParams.driver;
   const lapNumber = parseInt(resolvedParams.lap) || 1;
+  const canonicalSessionId = `${season}_${circuit.toLowerCase().replace(/ /g, "_")}_${sessionType.toLowerCase()}`;
 
   // Fetch Session Overview to get dynamic team driver roster for this season/session
   const { data: sessionOverview } = useQuery({
@@ -304,8 +336,6 @@ export default function LapTelemetryPage({
       ? Object.keys(sessionOverview.driver_lap_summaries)
       : [driverCode];
   const comparisonDrivers = availableDrivers.filter((d) => d.toUpperCase() !== driverCode.toUpperCase());
-
-  const searchParams = useSearchParams();
 
   // Fetch Current Logged-in User for permissions
   const { data: currentUser = null } = useQuery<UserMeResponse | null>({
@@ -360,7 +390,7 @@ export default function LapTelemetryPage({
       const res = await axiosInstance.get(
         `/api/v1/race-engineer/lap-telemetry/${encodeURIComponent(resolvedParams.session)}/${encodeURIComponent(driverCode)}/${lapNumber}/export`,
         {
-          params: { format },
+          params: { format, season, circuit, session_type: sessionType },
           responseType: "blob",
         }
       );
@@ -370,7 +400,7 @@ export default function LapTelemetryPage({
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `telemetry_${resolvedParams.session}_${driverCode}_lap${lapNumber}.${format}`;
+      a.download = `telemetry_${season}_${circuit.replace(/ /g, "_")}_${driverCode}_lap${lapNumber}.${format}`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -568,11 +598,15 @@ export default function LapTelemetryPage({
     const offsetX = (viewBoxW - rangeX * scale) / 2;
     const offsetY = (viewBoxH - rangeY * scale) / 2;
 
-    const mappedPoints = validPosPoints.map((p) => ({
-      nx: (p.x - minX) * scale + offsetX,
-      ny: (maxY - p.y) * scale + offsetY,
-      time: p.time_seconds,
-    }));
+    const firstPtTime = validPosPoints.length > 0 ? validPosPoints[0].time_seconds : 0;
+    const mappedPoints = validPosPoints.map((p) => {
+      const relTime = p.time_seconds > 1000 ? p.time_seconds - firstPtTime : p.time_seconds;
+      return {
+        nx: (p.x - minX) * scale + offsetX,
+        ny: (maxY - p.y) * scale + offsetY,
+        time: relTime,
+      };
+    });
 
     const centroidX = mappedPoints.reduce((acc, p) => acc + p.nx, 0) / mappedPoints.length;
     const centroidY = mappedPoints.reduce((acc, p) => acc + p.ny, 0) / mappedPoints.length;
@@ -580,9 +614,12 @@ export default function LapTelemetryPage({
     // Polyline track paths
     fullTrackPath = `M ${mappedPoints.map((p) => `${p.nx.toFixed(1)},${p.ny.toFixed(1)}`).join(" L ")} Z`;
 
-    const s1Pts = mappedPoints.filter((p) => p.time <= s1Time);
-    const s2Pts = mappedPoints.filter((p) => p.time >= s1Time && p.time <= s2Time);
-    const s3Pts = mappedPoints.filter((p) => p.time >= s2Time);
+    const s1EndIdx = mappedPoints.findIndex((p) => p.time > s1Time);
+    const s2EndIdx = mappedPoints.findIndex((p) => p.time > s2Time);
+
+    const s1Pts = s1EndIdx !== -1 ? mappedPoints.slice(0, s1EndIdx + 1) : mappedPoints;
+    const s2Pts = s1EndIdx !== -1 ? mappedPoints.slice(s1EndIdx, s2EndIdx !== -1 ? s2EndIdx + 1 : mappedPoints.length) : [];
+    const s3Pts = s2EndIdx !== -1 ? mappedPoints.slice(s2EndIdx) : [];
 
     if (s1Pts.length > 0) {
       s1SvgPath = `M ${s1Pts.map((p) => `${p.nx.toFixed(1)},${p.ny.toFixed(1)}`).join(" L ")}`;
@@ -712,7 +749,7 @@ export default function LapTelemetryPage({
           {error instanceof Error ? error.message : "Unable to load detailed lap telemetry from FastF1."}
         </p>
         <Link
-          href="/race-engineer/telemetry"
+          href={`/race-engineer/telemetry?season=${season}&circuit=${encodeURIComponent(circuit)}&session_type=${encodeURIComponent(sessionType)}`}
           className="mt-4 inline-flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-200"
         >
           <ArrowLeft size={14} /> Back to Telemetry Overview
@@ -727,7 +764,7 @@ export default function LapTelemetryPage({
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border border-slate-800 bg-slate-surface p-5 border-l-2 border-l-cyan-400">
         <div>
           <Link
-            href="/race-engineer/telemetry"
+            href={`/race-engineer/telemetry?season=${season}&circuit=${encodeURIComponent(circuit)}&session_type=${encodeURIComponent(sessionType)}`}
             className="inline-flex items-center gap-1.5 text-xs font-mono font-semibold text-cyan-400 hover:text-cyan-300 mb-2 transition-colors"
           >
             <ArrowLeft size={14} /> Back to Overview

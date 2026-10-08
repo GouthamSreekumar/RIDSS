@@ -52,6 +52,7 @@ from app.services.strategy_analysis import (
     calculate_tire_degradation_for_laps,
     compare_race_strategies,
     get_circuit_pit_loss,
+    get_fuel_effect_seconds_per_lap,
     summarize_historical_cross_season,
 )
 from app.services.telemetry_provider import telemetry_provider
@@ -507,7 +508,10 @@ async def get_tire_analysis(
         "session_type": target_session_type,
     }
 
-    result = calculate_tire_degradation_for_laps(driver_laps, driver_code_upper, session_info)
+    fuel_effect = await get_fuel_effect_seconds_per_lap(db)
+    result = calculate_tire_degradation_for_laps(
+        driver_laps, driver_code_upper, session_info, fuel_effect_seconds_per_lap=fuel_effect
+    )
 
     if overview.weather_summary:
         result.track_temp = overview.weather_summary.track_temp
@@ -853,6 +857,7 @@ async def generate_strategy_report(
 
     report_data_snapshot = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "model_version": 2,
         "team_id": team_id,
         "session_id": payload.session_id,
         "driver_code": payload.driver_code,
