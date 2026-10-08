@@ -134,6 +134,7 @@ Last updated: 2026-08-16
 - [x] Weather data threaded through from shared Race Engineer function to Strategy Engineer
 - [x] Track temp/rainfall shown on tire analysis screen
 - [x] Track temp shown alongside degradation rate on historical cross-season view
+- [x] Next-season fallback and empty-state message for the event picker.
 
 
 

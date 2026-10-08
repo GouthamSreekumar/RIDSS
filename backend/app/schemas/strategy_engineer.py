@@ -113,17 +113,22 @@ class PreRacePlanningReference(BaseModel):
 # ── Upcoming-events ───────────────────────────────────────────────────────────
 
 class UpcomingEvent(BaseModel):
-    """A race event in the current season whose race date is today or later."""
+    """A race event in the current or next season whose race date is today or later."""
     round: int
     event_name: str
     circuit: str
     country: str
     race_date: Optional[str] = None  # ISO date string
+    season: Optional[int] = None
+    label: Optional[str] = None
 
 
 class UpcomingEventsResponse(BaseModel):
     season: int
     events: List[UpcomingEvent]
+    is_fallback_season: bool = False
+    reason_code: Optional[str] = None
+    message: Optional[str] = None
 
 
 class EventDriverEntry(BaseModel):

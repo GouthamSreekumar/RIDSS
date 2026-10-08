@@ -239,45 +239,79 @@ async def get_upcoming_events(
     current_user: User = Depends(require_permission("strategy:read")),
 ) -> UpcomingEventsResponse:
     """
-    Returns all race events in the current season whose race date is today or later.
-    Testing events are excluded. Season is always the current year.
-    Used to populate the Event dropdown in the Compose Strategy Plan dialog.
+    Returns upcoming race events for strategy planning.
+
+    1. Checks current season. Returns race events whose race date is today or later.
+    2. If no events remain in current season, attempts fallback to next season when FastF1's
+       schedule for next season is available. Labels each event with its season ("2027 season – Round 1 ...").
+    3. If current season is complete and next season's schedule is unavailable, returns an empty list
+       with reason_code="SEASON_COMPLETE_NEXT_UNAVAILABLE" and a descriptive message.
     """
-    season = _current_season()
-    raw_events = await _get_upcoming_events_list(season)
+    current_season = _current_season()
+    raw_events = await _get_upcoming_events_list(current_season)
 
-    events = [
-        UpcomingEvent(
-            round=ev["round_number"],
-            event_name=ev["event_name"],
-            circuit=ev.get("location", ev["event_name"]),
-            country=ev.get("country", ""),
-            race_date=ev.get("event_date"),
-        )
-        for ev in raw_events
-    ]
+    if raw_events:
+        events = [
+            UpcomingEvent(
+                round=ev["round_number"],
+                event_name=ev["event_name"],
+                circuit=ev.get("location", ev["event_name"]),
+                country=ev.get("country", ""),
+                race_date=ev.get("event_date"),
+                season=current_season,
+                label=f"Round {ev['round_number']}: {ev['event_name']} ({ev.get('location', ev['event_name'])})",
+            )
+            for ev in raw_events
+        ]
+        return UpcomingEventsResponse(season=current_season, events=events, is_fallback_season=False)
 
-    return UpcomingEventsResponse(season=season, events=events)
+    # Fallback to next season if current season has no remaining events
+    next_season = current_season + 1
+    try:
+        next_raw_events = await _get_upcoming_events_list(next_season)
+    except Exception as exc:
+        logger.warning("Could not load next season schedule for %s: %s", next_season, exc)
+        next_raw_events = []
+
+    if next_raw_events:
+        events = [
+            UpcomingEvent(
+                round=ev["round_number"],
+                event_name=ev["event_name"],
+                circuit=ev.get("location", ev["event_name"]),
+                country=ev.get("country", ""),
+                race_date=ev.get("event_date"),
+                season=next_season,
+                label=f"{next_season} season – Round {ev['round_number']}: {ev['event_name']} ({ev.get('location', ev['event_name'])})",
+            )
+            for ev in next_raw_events
+        ]
+        return UpcomingEventsResponse(season=next_season, events=events, is_fallback_season=True)
+
+    # Empty state when current season is complete and next season schedule is not available
+    return UpcomingEventsResponse(
+        season=current_season,
+        events=[],
+        is_fallback_season=False,
+        reason_code="SEASON_COMPLETE_NEXT_UNAVAILABLE",
+        message=f"No upcoming events: the {current_season} season is complete and next season's schedule isn't published yet.",
+    )
 
 
 # ── 3. Upcoming Event Drivers ─────────────────────────────────────────────────
 @router.get("/upcoming-events/{round}/drivers", response_model=EventDriversResponse)
 async def get_event_drivers(
     round: int,
+    season: Optional[int] = Query(None, description="Optional target event season"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("strategy:read")),
 ) -> EventDriversResponse:
     """
     Returns the team's driver roster for a selected upcoming event round.
 
-    Because the event has not yet occurred, the roster is derived from the team's
-    most recent completed race in the current season — matching FastF1 session results
-    by team name (same shared function used by the Race Engineer dashboard).
-
-    If no completed race exists in the current season, falls back to the previous
-    season's final race and labels this in `roster_basis_event`.
-
-    Does NOT read the internal Driver DB table — uses FastF1 session results exclusively.
+    If season is specified (e.g. for next season events), uses that season.
+    For next-season events (or when current season is complete), derives the roster from
+    the previous season's final race and labels it ("Roster based on [event], [season]").
     """
     team_id = _ensure_strategy_team(current_user)
     team_name = await get_team_name_by_id(db, team_id)
@@ -285,69 +319,57 @@ async def get_event_drivers(
         raise HTTPException(status_code=400, detail="Could not resolve team name.")
 
     current_season = _current_season()
-    all_events = telemetry_provider.get_event_schedule(current_season)
+    target_season = season if season is not None else current_season
+    all_events = telemetry_provider.get_event_schedule(target_season)
 
-    # Locate the target event so we can return its name
     target_event_name = f"Round {round}"
     for ev in all_events:
         if ev.get("round_number") == round:
             target_event_name = ev.get("event_name", target_event_name)
             break
 
-    # Find the most recent completed race in the current season
-    completed = [
-        ev for ev in all_events
-        if ev.get("round_number", 0) > 0 and not _is_upcoming(ev.get("event_date"))
-    ]
-    completed_sorted = sorted(completed, key=lambda e: e.get("round_number", 0), reverse=True)
+    search_seasons = [target_season, target_season - 1, current_season - 1]
 
     roster_basis_event: Optional[str] = None
     roster_basis_season: Optional[int] = None
     driver_codes: List[str] = []
 
-    async def _try_load(season: int, circuit: str) -> List[str]:
+    async def _try_load(s_yr: int, circuit: str) -> List[str]:
         try:
             overview = await asyncio.to_thread(
                 telemetry_provider.get_session_overview,
-                season, circuit, "Race", None, team_name
+                s_yr, circuit, "Race", None, team_name
             )
             codes = []
             if overview.session_results:
                 codes = [r.driver_code.upper() for r in overview.session_results if r.driver_code]
             return codes
         except Exception as exc:
-            logger.warning("Could not load roster from %s %s season %s: %s", circuit, season, season, exc)
+            logger.warning("Could not load roster from %s %s season %s: %s", circuit, s_yr, s_yr, exc)
             return []
 
-    if completed_sorted:
-        latest = completed_sorted[0]
-        circuit = latest.get("location") or latest.get("event_name", "")
-        driver_codes = await _try_load(current_season, circuit)
+    for s_yr in search_seasons:
         if driver_codes:
-            roster_basis_event = latest.get("event_name", circuit)
-            roster_basis_season = current_season
-
-    # Fallback: previous season's final race
-    if not driver_codes:
-        prev_season = current_season - 1
-        prev_events = telemetry_provider.get_event_schedule(prev_season)
-        prev_completed = sorted(
-            [e for e in prev_events if e.get("round_number", 0) > 0 and not _is_upcoming(e.get("event_date"))],
-            key=lambda e: e.get("round_number", 0),
-            reverse=True,
-        )
-        if prev_completed:
-            fallback_ev = prev_completed[0]
-            circuit = fallback_ev.get("location") or fallback_ev.get("event_name", "")
-            driver_codes = await _try_load(prev_season, circuit)
-            if driver_codes:
-                roster_basis_event = fallback_ev.get("event_name", circuit)
-                roster_basis_season = prev_season
+            break
+        ev_sched = telemetry_provider.get_event_schedule(s_yr)
+        completed = [
+            ev for ev in ev_sched
+            if ev.get("round_number", 0) > 0 and not _is_upcoming(ev.get("event_date"))
+        ]
+        completed_sorted = sorted(completed, key=lambda e: e.get("round_number", 0), reverse=True)
+        if completed_sorted:
+            latest = completed_sorted[0]
+            circuit = latest.get("location") or latest.get("event_name", "")
+            codes = await _try_load(s_yr, circuit)
+            if codes:
+                driver_codes = codes
+                roster_basis_event = latest.get("event_name", circuit)
+                roster_basis_season = s_yr
 
     drivers = [EventDriverEntry(driver_code=code) for code in driver_codes]
 
     return EventDriversResponse(
-        season=current_season,
+        season=target_season,
         round=round,
         event_name=target_event_name,
         drivers=drivers,
@@ -363,25 +385,18 @@ async def get_event_drivers(
 @router.get("/upcoming-events/{round}/planning-reference", response_model=PreRacePlanningReference)
 async def get_planning_reference(
     round: int,
+    season: Optional[int] = Query(None, description="Optional target event season"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("strategy:read")),
 ) -> PreRacePlanningReference:
     """
     Returns per-compound planning guidance for the selected upcoming event.
-
-    Shows:
-      - Projected degradation rate and base pace per compound
-      - Data source tier (historical circuit data or built-in baseline model)
-      - Estimated viable stint-length window
-      - A reliability caution for any compound with a non-positive degradation rate
-      - The configured pit-lane loss constant for this circuit
-      - Default total race laps (from the most recent edition; engineer can override)
-
-    This is a Phase 1 deterministic estimate — not a guarantee of race-day performance.
+    Accepts optional season query parameter.
     """
     team_id = _ensure_strategy_team(current_user)
     current_season = _current_season()
-    all_events = telemetry_provider.get_event_schedule(current_season)
+    target_season = season if season is not None else current_season
+    all_events = telemetry_provider.get_event_schedule(target_season)
 
     event_name = f"Round {round}"
     circuit = "Unknown"
@@ -394,9 +409,12 @@ async def get_planning_reference(
     # Pit loss for this circuit
     pit_loss = await get_circuit_pit_loss(db, circuit)
 
-    # Historical data: most recent 3 seasons at this circuit
+    # Historical data: most recent 3 seasons at this circuit prior to target_season
     available_seasons = telemetry_provider.get_seasons()
-    past_seasons = [s for s in available_seasons if s < current_season][-3:]
+    past_seasons = [s for s in available_seasons if s < target_season][-3:]
+    if not past_seasons:
+        past_seasons = [s for s in available_seasons if s <= target_season][-3:]
+
     overviews = []
     for s in past_seasons:
         try:
@@ -414,8 +432,6 @@ async def get_planning_reference(
     if overviews:
         most_recent = overviews[-1]
         if most_recent.total_laps and most_recent.total_laps > 0:
-            # total_laps in SessionOverview counts individual lap rows (all drivers),
-            # so derive per-race laps from the driver with the most laps.
             try:
                 max_driver_laps = max(
                     len(laps) for laps in most_recent.driver_lap_summaries.values()
@@ -428,7 +444,7 @@ async def get_planning_reference(
     ref = build_pre_race_planning_reference(
         event_name=event_name,
         circuit_name=circuit,
-        season=current_season,
+        season=target_season,
         round_number=round,
         pit_loss_seconds=pit_loss,
         default_total_laps=default_total_laps,
@@ -511,45 +527,76 @@ async def create_race_strategy(
     current_user: User = Depends(require_permission("strategy:create")),
 ) -> RaceStrategyResponse:
     """
-    Creates a pre-race strategy plan for an upcoming event in the current season.
+    Creates a pre-race strategy plan for an upcoming event.
 
     Server-side validation:
-      - The selected season must be the current season.
-      - The selected round must appear in the current season's list of upcoming events
-        (race date today or later). Plans cannot be created for past races.
+      - Accepts current-season events that haven't run yet, OR next-season events
+        only when the current season has no events remaining.
+      - Stores the plan against the event's own season, not an assumed current one.
     """
     team_id = _ensure_strategy_team(current_user)
-
     current_season = _current_season()
 
-    # Enforce current season only
-    if payload.season != current_season:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Strategy plans may only be created for the current season ({current_season}).",
-        )
+    curr_upcoming = await _get_upcoming_events_list(current_season)
+    target_season = payload.season
+    target_round = payload.round
 
-    # Enforce upcoming events only
-    upcoming = await _get_upcoming_events_list(current_season)
-    upcoming_rounds = {ev["round_number"] for ev in upcoming}
-    if payload.round not in upcoming_rounds:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Round {payload.round} is not an upcoming event in the {current_season} season. "
-                "Strategy plans can only be created for events whose race date is today or later."
-            ),
-        )
+    if curr_upcoming:
+        if target_season != current_season:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Strategy plans may only be created for the current season ({current_season}).",
+            )
+        allowed_rounds = {ev["round_number"] for ev in curr_upcoming}
+        if target_round not in allowed_rounds:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Round {target_round} is not an upcoming event in the {current_season} season. "
+                    "Strategy plans can only be created for events whose race date is today or later."
+                ),
+            )
+        upcoming_source = curr_upcoming
+    else:
+        next_season = current_season + 1
+        try:
+            next_upcoming = await _get_upcoming_events_list(next_season)
+        except Exception:
+            next_upcoming = []
+
+        if not next_upcoming:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"No upcoming events available: the {current_season} season is complete "
+                    "and next season's schedule isn't published yet."
+                ),
+            )
+        if target_season != next_season:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"The {current_season} season is complete. "
+                    f"Strategy plans can only be created for upcoming events in the {next_season} season."
+                ),
+            )
+        allowed_rounds = {ev["round_number"] for ev in next_upcoming}
+        if target_round not in allowed_rounds:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Round {target_round} is not a valid upcoming event in the {next_season} season schedule.",
+            )
+        upcoming_source = next_upcoming
 
     # Derive circuit name for the event_name stored in plan
-    event_name = f"Round {payload.round}"
-    for ev in upcoming:
-        if ev["round_number"] == payload.round:
+    event_name = f"Round {target_round}"
+    for ev in upcoming_source:
+        if ev["round_number"] == target_round:
             event_name = ev.get("event_name", event_name)
             break
 
     plan_data = {
-        "title": payload.title or f"Strategy Plan — {event_name} {current_season}",
+        "title": payload.title or f"Strategy Plan — {event_name} {target_season}",
         "driver_code": payload.driver_code,
         "stints": [s.model_dump() for s in payload.plan],
         "total_laps": payload.total_laps,
@@ -557,9 +604,9 @@ async def create_race_strategy(
 
     new_strategy = RaceStrategy(
         team_id=team_id,
-        session_id=None,  # New plans use season + round, not free-text session_id
-        season=payload.season,
-        round=payload.round,
+        session_id=None,
+        season=target_season,
+        round=target_round,
         created_by=current_user.user_id,
         plan=plan_data,
         created_at=datetime.now(timezone.utc),
@@ -576,8 +623,8 @@ async def create_race_strategy(
         details={
             "team_id": team_id,
             "strategy_id": new_strategy.id,
-            "season": payload.season,
-            "round": payload.round,
+            "season": target_season,
+            "round": target_round,
             "event_name": event_name,
             "driver_code": payload.driver_code,
             "stints_count": len(payload.plan),

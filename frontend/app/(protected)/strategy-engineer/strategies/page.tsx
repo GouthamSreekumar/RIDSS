@@ -48,6 +48,16 @@ interface UpcomingEvent {
   circuit: string;
   country: string;
   race_date?: string;
+  season?: number;
+  label?: string;
+}
+
+interface UpcomingEventsResponse {
+  season: number;
+  events: UpcomingEvent[];
+  is_fallback_season?: boolean;
+  reason_code?: string;
+  message?: string;
 }
 
 interface EventDriver {
@@ -131,18 +141,24 @@ async function fetchRaceStrategies(): Promise<RaceStrategy[]> {
   return res.data;
 }
 
-async function fetchUpcomingEvents(): Promise<{ season: number; events: UpcomingEvent[] }> {
+async function fetchUpcomingEvents(): Promise<UpcomingEventsResponse> {
   const res = await axiosInstance.get("/api/v1/strategy-engineer/upcoming-events");
   return res.data;
 }
 
-async function fetchEventDrivers(round: number): Promise<EventDriversResponse> {
-  const res = await axiosInstance.get(`/api/v1/strategy-engineer/upcoming-events/${round}/drivers`);
+async function fetchEventDrivers(round: number, season?: number): Promise<EventDriversResponse> {
+  const url = season
+    ? `/api/v1/strategy-engineer/upcoming-events/${round}/drivers?season=${season}`
+    : `/api/v1/strategy-engineer/upcoming-events/${round}/drivers`;
+  const res = await axiosInstance.get(url);
   return res.data;
 }
 
-async function fetchPlanningReference(round: number): Promise<PlanningReference> {
-  const res = await axiosInstance.get(`/api/v1/strategy-engineer/upcoming-events/${round}/planning-reference`);
+async function fetchPlanningReference(round: number, season?: number): Promise<PlanningReference> {
+  const url = season
+    ? `/api/v1/strategy-engineer/upcoming-events/${round}/planning-reference?season=${season}`
+    : `/api/v1/strategy-engineer/upcoming-events/${round}/planning-reference`;
+  const res = await axiosInstance.get(url);
   return res.data;
 }
 
@@ -155,6 +171,7 @@ export default function RaceStrategiesPage() {
 
   // Form state
   const [selectedRound, setSelectedRound] = useState<number | null>(null);
+  const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
   const [selectedDriver, setSelectedDriver] = useState<string>("");
   const [formTitle, setFormTitle] = useState("");
   const [totalLaps, setTotalLaps] = useState<number>(57);
@@ -176,7 +193,7 @@ export default function RaceStrategiesPage() {
     staleTime: 60_000,
   });
 
-  const { data: upcomingData, isLoading: loadingEvents } = useQuery({
+  const { data: upcomingData, isLoading: loadingEvents } = useQuery<UpcomingEventsResponse>({
     queryKey: ["upcomingEvents"],
     queryFn: fetchUpcomingEvents,
     enabled: isModalOpen,
@@ -184,15 +201,15 @@ export default function RaceStrategiesPage() {
   });
 
   const { data: driversData, isLoading: loadingDrivers } = useQuery<EventDriversResponse>({
-    queryKey: ["eventDrivers", selectedRound],
-    queryFn: () => fetchEventDrivers(selectedRound!),
+    queryKey: ["eventDrivers", selectedRound, selectedSeason],
+    queryFn: () => fetchEventDrivers(selectedRound!, selectedSeason || undefined),
     enabled: isModalOpen && selectedRound !== null,
     staleTime: 5 * 60_000,
   });
 
   const { data: planningRef, isLoading: loadingRef } = useQuery<PlanningReference>({
-    queryKey: ["planningReference", selectedRound],
-    queryFn: () => fetchPlanningReference(selectedRound!),
+    queryKey: ["planningReference", selectedRound, selectedSeason],
+    queryFn: () => fetchPlanningReference(selectedRound!, selectedSeason || undefined),
     enabled: isModalOpen && selectedRound !== null,
     staleTime: 5 * 60_000,
     onSuccess: (data) => {
@@ -218,8 +235,9 @@ export default function RaceStrategiesPage() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      if (!selectedRound || !upcomingData) throw new Error("No event selected.");
-      const season = upcomingData.season;
+      if (!selectedRound) throw new Error("No event selected.");
+      const season = selectedSeason || upcomingData?.season;
+      if (!season) throw new Error("No season resolved.");
       await axiosInstance.post("/api/v1/strategy-engineer/strategies", {
         season,
         round: selectedRound,
@@ -233,6 +251,7 @@ export default function RaceStrategiesPage() {
       queryClient.invalidateQueries({ queryKey: ["raceStrategiesList"] });
       setIsModalOpen(false);
       setSelectedRound(null);
+      setSelectedSeason(null);
       setSelectedDriver("");
       setFormTitle("");
     },
@@ -653,27 +672,57 @@ export default function RaceStrategiesPage() {
                   <label className="block text-slate-400 mb-1">Upcoming event</label>
                   {loadingEvents ? (
                     <div className="border border-slate-800 bg-slate-950 px-3 py-2 text-slate-500">Loading events…</div>
-                  ) : (
-                    <select
-                      value={selectedRound ?? ""}
-                      onChange={(e) => {
-                        const r = e.target.value ? Number(e.target.value) : null;
-                        setSelectedRound(r);
-                        setSelectedDriver("");
-                      }}
-                      required
-                      className="w-full border border-slate-800 bg-slate-950 px-3 py-2 text-slate-100 focus:border-cyan-400 focus:outline-none"
-                    >
-                      <option value="">Select event…</option>
-                      {(upcomingData?.events || []).map((ev) => (
-                        <option key={ev.round} value={ev.round}>
-                          R{ev.round} — {ev.event_name} {ev.race_date ? `(${ev.race_date.slice(0, 10)})` : ""}
+                  ) : (upcomingData?.events || []).length === 0 ? (
+                    <div className="space-y-1.5">
+                      <select
+                        disabled
+                        className="w-full border border-slate-800 bg-slate-950/60 px-3 py-2 text-slate-500 cursor-not-allowed opacity-75"
+                      >
+                        <option>
+                          {upcomingData?.message || "No upcoming events available"}
                         </option>
-                      ))}
-                    </select>
-                  )}
-                  {upcomingData?.events.length === 0 && (
-                    <p className="text-amber-400 text-[10px] mt-1">No upcoming events in the current season.</p>
+                      </select>
+                      <div className="p-2.5 border border-amber-900/40 bg-amber-950/30 text-[11px] font-mono text-amber-300 flex items-start gap-2">
+                        <AlertTriangle size={13} className="text-amber-400 shrink-0 mt-0.5" />
+                        <span>
+                          {upcomingData?.message ||
+                            `No upcoming events: the ${upcomingData?.season || 2026} season is complete and next season's schedule isn't published yet.`}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <select
+                        value={selectedRound ?? ""}
+                        onChange={(e) => {
+                          const r = e.target.value ? Number(e.target.value) : null;
+                          if (!r) {
+                            setSelectedRound(null);
+                            setSelectedSeason(null);
+                            setSelectedDriver("");
+                            return;
+                          }
+                          const ev = upcomingData?.events.find((item) => item.round === r);
+                          setSelectedRound(r);
+                          setSelectedSeason(ev?.season || upcomingData?.season || null);
+                          setSelectedDriver("");
+                        }}
+                        required
+                        className="w-full border border-slate-800 bg-slate-950 px-3 py-2 text-slate-100 focus:border-cyan-400 focus:outline-none"
+                      >
+                        <option value="">Select event…</option>
+                        {upcomingData?.events.map((ev) => (
+                          <option key={ev.round} value={ev.round}>
+                            {ev.label || `Round ${ev.round}: ${ev.event_name} (${ev.circuit})`}
+                          </option>
+                        ))}
+                      </select>
+                      {upcomingData?.is_fallback_season && (
+                        <p className="text-purple-300 text-[10px] mt-1 font-mono">
+                          ★ Next-season schedule ({upcomingData.season})
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
 
