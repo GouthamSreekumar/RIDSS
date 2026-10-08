@@ -3,8 +3,10 @@ Pydantic response and request schemas for Strategy Engineer module.
 """
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+
+# ── Tire degradation ─────────────────────────────────────────────────────────
 
 class ExcludedLapDetail(BaseModel):
     lap_number: int
@@ -29,10 +31,10 @@ class StintDegradation(BaseModel):
     excluded_laps_count: int
     excluded_lap_numbers: List[ExcludedLapDetail] = Field(default_factory=list)
     degradation_rate: Optional[float] = Field(
-        None, description="Tire degradation rate in seconds lost per lap (slope of linear fit)"
+        None, description="Tire degradation rate in seconds per lap (slope of OLS linear fit)"
     )
     base_pace: Optional[float] = Field(
-        None, description="Estimated base pace on fresh tires (intercept of linear fit)"
+        None, description="Estimated base pace on fresh tires (intercept of OLS linear fit)"
     )
     laps: List[TireDegradationLap] = Field(default_factory=list)
 
@@ -50,44 +52,102 @@ class TireAnalysisResponse(BaseModel):
     humidity: Optional[float] = Field(None, description="Average humidity percentage during session")
 
 
-class PitRecommendationResponse(BaseModel):
-    session_id: str
-    season: int
-    circuit_name: str
-    session_type: str
-    driver_code: str
-    current_stint: Optional[int] = None
-    current_compound: Optional[str] = None
-    current_degradation_rate: Optional[float] = Field(
-        None, description="Degradation rate of current stint (sec/lap)"
+# ── Pre-race planning reference ───────────────────────────────────────────────
+
+class CompoundPlanningGuide(BaseModel):
+    """Per-compound pre-race planning guidance for the upcoming event."""
+    compound: str
+    degradation_rate: Optional[float] = Field(
+        None, description="Projected degradation rate in seconds per lap"
     )
-    current_base_pace: Optional[float] = None
-    alternate_compound: Optional[str] = None
-    alternate_degradation_rate: Optional[float] = Field(
-        None, description="Estimated degradation rate for alternate compound"
+    base_pace: Optional[float] = Field(
+        None, description="Projected fresh-tyre base pace in seconds"
     )
-    alternate_base_pace: Optional[float] = Field(
-        None, description="Estimated base pace for alternate compound"
+    degradation_source: str = Field(
+        "default_fallback",
+        description="Data tier used: 'practice_session', 'historical_circuit', or 'default_fallback'"
     )
-    pit_loss_seconds: float = Field(
-        22.0, description="Configured per-circuit pit stop time loss constant from SystemSettings"
+    source_detail: Optional[str] = Field(
+        None, description="Human-readable description of the data source (e.g. 'Avg of 3 past races at Bahrain')"
     )
-    crossover_lap: Optional[int] = Field(
-        None, description="Lap number where switching compounds becomes net-faster"
+    estimated_viable_stint_min: Optional[int] = Field(
+        None, description="Lower bound of viable stint length in laps based on degradation model"
     )
-    recommended_window_start: Optional[int] = Field(
-        None, description="Recommended pit window start lap range"
+    estimated_viable_stint_max: Optional[int] = Field(
+        None, description="Upper bound of viable stint length in laps based on degradation model"
     )
-    recommended_window_end: Optional[int] = Field(
-        None, description="Recommended pit window end lap range"
+    degradation_rate_unreliable: bool = Field(
+        False,
+        description=(
+            "True when the source degradation rate is zero or negative (fuel-burn / track-evolution artefact). "
+            "Stint-length estimates from this compound should not be trusted."
+        )
     )
-    reasoning: str = Field(
-        ..., description="Transparent, explainable Phase 1 deterministic reasoning calculation"
-    )
-    fallback_used: bool = Field(
-        False, description="Flag indicating if alternate compound pace used historical circuit fallback"
+    reliability_caution: Optional[str] = Field(
+        None,
+        description="Human-readable reliability warning shown in the UI when degradation_rate_unreliable is True"
     )
 
+
+class PreRacePlanningReference(BaseModel):
+    """Pre-race planning reference shown inside the Compose Strategy Plan dialog."""
+    event_name: str
+    circuit_name: str
+    season: int
+    round: int
+    pit_loss_seconds: float = Field(22.0, description="Configured per-circuit pit stop time loss constant")
+    default_total_laps: int = Field(
+        57, description=(
+            "Default total race distance in laps derived from the most recent edition of this event. "
+            "The engineer can override this in the plan."
+        )
+    )
+    compounds: List[CompoundPlanningGuide] = Field(default_factory=list)
+    data_basis_note: str = Field(
+        "Phase 1 deterministic estimate — based on historical circuit data and/or compound baseline models. "
+        "Not a guarantee of race-day performance.",
+        description="Explanatory note displayed prominently above the compound table"
+    )
+
+
+# ── Upcoming-events ───────────────────────────────────────────────────────────
+
+class UpcomingEvent(BaseModel):
+    """A race event in the current season whose race date is today or later."""
+    round: int
+    event_name: str
+    circuit: str
+    country: str
+    race_date: Optional[str] = None  # ISO date string
+
+
+class UpcomingEventsResponse(BaseModel):
+    season: int
+    events: List[UpcomingEvent]
+
+
+class EventDriverEntry(BaseModel):
+    driver_code: str
+    full_name: Optional[str] = None
+    driver_number: Optional[int] = None
+
+
+class EventDriversResponse(BaseModel):
+    season: int
+    round: int
+    event_name: str
+    drivers: List[EventDriverEntry]
+    roster_basis_event: Optional[str] = Field(
+        None,
+        description=(
+            "If no completed race exists in the current season, "
+            "describes the fallback race used to infer the roster"
+        )
+    )
+    roster_basis_season: Optional[int] = None
+
+
+# ── Historical cross-season review ───────────────────────────────────────────
 
 class HistoricalStintPattern(BaseModel):
     season: int
@@ -121,6 +181,8 @@ class HistoricalStrategyReviewResponse(BaseModel):
     )
 
 
+# ── Strategy scenario comparison ─────────────────────────────────────────────
+
 class StintEstimate(BaseModel):
     stint_number: int
     compound: str
@@ -148,22 +210,24 @@ class StrategyComparisonItem(BaseModel):
     stint_estimates: List[StintEstimate] = Field(default_factory=list)
     is_lowest_time: bool = False
     estimation_label: str = Field(
-        "Estimated — based on current degradation model, not a guarantee",
+        "Phase 1 estimate — based on historical degradation model, not a guarantee",
         description="Phase 1 deterministic estimate framing label"
     )
 
 
 class StrategyComparisonResponse(BaseModel):
-    session_id: str
-    circuit_name: str
     season: int
+    round: int
+    circuit_name: str
     pit_loss_seconds: float
     compared_strategies: List[StrategyComparisonItem] = Field(default_factory=list)
     disclaimer: str = Field(
-        "Estimated — based on current degradation model, not a guarantee",
+        "Phase 1 estimate — based on historical degradation model, not a guarantee",
         description="Global disclaimer label for deterministic estimate"
     )
 
+
+# ── Strategy plan CRUD ────────────────────────────────────────────────────────
 
 class StintPlan(BaseModel):
     stint_number: int = Field(..., ge=1)
@@ -175,33 +239,51 @@ class StintPlan(BaseModel):
 
 
 class RaceStrategyCreate(BaseModel):
-    session_id: str = Field(..., description="Target session slug e.g. 2024_Monaco_Race")
+    """
+    Creates a strategy plan for an UPCOMING race in the current season.
+    `season` and `round` are resolved server-side from the selected upcoming event.
+    """
+    season: int = Field(..., description="Current season year")
+    round: int = Field(..., ge=1, description="Race round number within the season")
     driver_code: Optional[str] = Field(None, description="Target driver code e.g. VER")
     title: Optional[str] = Field(None, description="Strategy plan title e.g. 2-Stop Soft-Medium-Hard")
-    plan: List[StintPlan] = Field(..., min_items=1, description="Stint-by-stint strategy plan")
+    total_laps: Optional[int] = Field(
+        None, ge=1,
+        description="Total race distance in laps; defaults to most recent edition of the event if omitted"
+    )
+    plan: List[StintPlan] = Field(..., min_length=1, description="Stint-by-stint strategy plan")
 
 
 class RaceStrategyResponse(BaseModel):
     id: str
     team_id: str
-    session_id: str
+    # Legacy plans use session_id; new plans use season + round
+    session_id: Optional[str] = None
+    season: Optional[int] = None
+    round: Optional[int] = None
     created_by: str
     creator_name: str
     title: Optional[str] = None
     driver_code: Optional[str] = None
     plan: List[StintPlan] = Field(default_factory=list)
     created_at: datetime
+    is_legacy: bool = Field(
+        False,
+        description="True for plans authored against the old free-text session_id; shown under Legacy Plans"
+    )
 
     class Config:
         from_attributes = True
 
+
+# ── Strategy reports ─────────────────────────────────────────────────────────
 
 class StrategyReportCreate(BaseModel):
     session_id: str = Field(..., description="Session identifier e.g. 2024_Monaco_Race")
     driver_code: Optional[str] = Field(None, description="Driver abbreviation code")
     driver_id: Optional[str] = Field(None, description="Driver database UUID")
     tire_degradation_summary: str = Field(..., description="Summary of tire degradation analysis")
-    pit_window_reasoning: str = Field(..., description="Pit window calculation and reasoning")
+    pit_window_reasoning: str = Field(..., description="Pit-window calculation and reasoning")
     strategy_plan_id: Optional[str] = Field(None, description="Associated strategy plan ID if created")
     key_findings: str = Field(..., description="Executive strategy conclusions and recommendations")
     custom_data: Optional[Dict[str, Any]] = None
@@ -216,6 +298,8 @@ class StrategyReportResponse(BaseModel):
     created_at: datetime
     data: Dict[str, Any]
 
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
 
 class StrategyEngineerDashboard(BaseModel):
     team_id: str

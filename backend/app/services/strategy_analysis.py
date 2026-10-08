@@ -1,15 +1,16 @@
 """
 Strategy analysis service layer for RIDSS Strategy Engineer Module.
 
-IMPORTANT ARCHITECTURAL BOUNDARY:
+ARCHITECTURAL BOUNDARY:
 This module NEVER queries FastF1 or telemetry providers directly.
 All telemetry and lap summaries are consumed exclusively from the Race Engineer module's
 processed service layer (`get_processed_session_overview`).
 
-PHASE 1 DISCIPLINE:
-Every analysis calculation below is a transparent, deterministic rule-based formula (not ML).
-All formulas are explicitly documented in code comments and returned in API reasoning fields.
-Phase 2 will later replace internal model logic behind these exact endpoints without changing API contracts.
+PHASE 1 SCOPE:
+RIDSS Phase 1 is a pre-race planning and post-race analysis system with no live timing feed.
+Every calculation below is a deterministic rule-based formula (not ML).
+All formulas are explicitly documented in code comments.
+Phase 2 will introduce a live data connector behind the same API contracts.
 """
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,11 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.settings import SystemSettings
 from app.schemas.race_engineer import LapSummary, SessionOverview
 from app.schemas.strategy_engineer import (
+    CompoundPlanningGuide,
     ExcludedLapDetail,
     HistoricalCompoundSummary,
     HistoricalStintPattern,
     HistoricalStrategyReviewResponse,
-    PitRecommendationResponse,
+    PreRacePlanningReference,
     StintDegradation,
     StintEstimate,
     StrategyComparisonItem,
@@ -237,54 +239,150 @@ async def get_circuit_pit_loss(db: AsyncSession, circuit_name: str) -> float:
     return DEFAULT_PIT_LOSS_SECONDS
 
 
+def build_pre_race_planning_reference(
+    event_name: str,
+    circuit_name: str,
+    season: int,
+    round_number: int,
+    pit_loss_seconds: float,
+    default_total_laps: int,
+    historical_review: Optional[Any],
+) -> "PreRacePlanningReference":
+    """
+    Builds the pre-race compound planning guidance shown in the Compose Strategy Plan dialog.
+
+    For each standard compound (SOFT / MEDIUM / HARD / INTERMEDIATE / WET) the function:
+      1. Attempts to derive degradation rate and base pace from historical circuit data.
+      2. Falls back to the built-in COMPOUND_DEFAULTS model.
+      3. Detects non-positive degradation rates (fuel-burn / track-evolution artefacts)
+         and sets `degradation_rate_unreliable = True` with a human-readable caution.
+      4. Estimates a viable stint-length window using the degradation threshold approach:
+           A stint ends when cumulative lap-time loss exceeds a tolerable threshold
+           (default: 3.0 s above base pace).
+
+    This function never references a "current stint" or tells the engineer to "hold
+    position" — it is purely a pre-race planning aid.
+    """
+    COMPOUNDS_ORDER = ["SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"]
+    DEGRADATION_THRESHOLD_S = 3.0  # acceptable total lap-time loss vs fresh tyre pace
+
+    # Build compound lookup from historical data
+    hist_map: Dict[str, Tuple[float, float, str]] = {}  # compound -> (deg_rate, base_pace, source_detail)
+    if historical_review and historical_review.compound_summaries:
+        for cs in historical_review.compound_summaries:
+            c = cs.compound.upper()
+            if cs.avg_base_pace is not None:
+                seasons_str = (
+                    f"{cs.sample_stints} stint(s) from {len(historical_review.seasons)} past season(s) at {circuit_name}"
+                    if historical_review.seasons else f"{cs.sample_stints} historical stints at {circuit_name}"
+                )
+                hist_map[c] = (cs.avg_degradation_rate, cs.avg_base_pace, seasons_str)
+
+    # Median base pace for relative fallback anchoring
+    known_bases = [v[1] for v in hist_map.values() if v[1] > 0]
+    reference_base = float(np.mean(known_bases)) if known_bases else 90.0
+
+    compounds: List["CompoundPlanningGuide"] = []
+
+    for comp in COMPOUNDS_ORDER:
+        if comp in hist_map:
+            deg_rate, base_pace, source_detail = hist_map[comp]
+            source = "historical_circuit"
+        else:
+            defaults = COMPOUND_DEFAULTS.get(comp, {"base_delta": 0.0, "deg_rate": 0.055})
+            deg_rate = defaults["deg_rate"]
+            base_pace = round(reference_base + defaults["base_delta"], 3)
+            source = "default_fallback"
+            source_detail = f"Built-in baseline model for {comp} compound (no historical data for {circuit_name})"
+
+        # Detect unreliable / non-positive degradation
+        unreliable = deg_rate is None or deg_rate <= 0.0
+        caution: Optional[str] = None
+        if unreliable:
+            caution = (
+                f"Degradation rate not positive in source data for {comp} "
+                f"(may reflect fuel-burn or track-evolution in raw lap times, not genuine tyre improvement). "
+                f"Stint-length estimate from this compound is unreliable for planning purposes."
+            )
+
+        # Viable stint window: lap k where cumulative loss = deg_rate * k > THRESHOLD
+        viable_min: Optional[int] = None
+        viable_max: Optional[int] = None
+        if not unreliable and deg_rate and deg_rate > 0:
+            # crossover lap = THRESHOLD / deg_rate (linear model)
+            crossover = int(DEGRADATION_THRESHOLD_S / deg_rate)
+            viable_min = max(1, crossover - 5)
+            viable_max = min(default_total_laps, crossover + 5)
+
+        compounds.append(
+            CompoundPlanningGuide(
+                compound=comp,
+                degradation_rate=round(float(deg_rate), 4) if deg_rate is not None else None,
+                base_pace=round(float(base_pace), 3) if base_pace is not None else None,
+                degradation_source=source,
+                source_detail=source_detail,
+                estimated_viable_stint_min=viable_min,
+                estimated_viable_stint_max=viable_max,
+                degradation_rate_unreliable=unreliable,
+                reliability_caution=caution,
+            )
+        )
+
+    return PreRacePlanningReference(
+        event_name=event_name,
+        circuit_name=circuit_name,
+        season=season,
+        round=round_number,
+        pit_loss_seconds=pit_loss_seconds,
+        default_total_laps=default_total_laps,
+        compounds=compounds,
+        data_basis_note=(
+            "Phase 1 deterministic estimate — derived from historical circuit lap data "
+            "and/or built-in compound baseline models. Not a guarantee of race-day performance."
+        ),
+    )
+
+
+# estimate_pit_window is retained for post-race analysis use only.
+# It is NOT exposed in the strategy plan authoring dialog (which is pre-race only).
 def estimate_pit_window(
     stint_analysis: TireAnalysisResponse,
     all_team_stints: List[StintDegradation],
     pit_loss_seconds: float,
     total_laps: int = 57,
-) -> PitRecommendationResponse:
+) -> Dict[str, Any]:
     """
-    Phase 1 Deterministic Pit Stop Window Recommendation:
-    Calculates cumulative race completion time for staying out vs pitting on candidate laps.
+    Phase 1 Deterministic Post-Race Pit Stop Window Analysis.
+    Computes cumulative time for staying out vs. pitting on candidate laps (post-race data).
 
-    Formula / Reasoning:
-      For candidate pit lap L (with N_rem = total_race_laps - L remaining laps):
+    Formula:
+      For candidate pit lap L (N_rem = total_race_laps - L remaining laps):
         Time_stay(L) = Sum_{k=L+1}^{total_race_laps} [ B_1 + D_1 * (k - start_lap + 1) ]
         Time_pit(L)  = pit_loss_seconds + Sum_{m=1}^{N_rem} [ B_2 + D_2 * m ]
         Net Savings  = Time_stay(L) - Time_pit(L)
-
-      Optimal Pit Lap L* maximizes Net Savings.
-      If Net Savings <= 0 for all L (e.g. near race end under green flag), recommend holding position.
+      Optimal pit lap L* maximises Net Savings.
     """
-    driver_code = stint_analysis.driver_code
-    session_id = stint_analysis.session_id
-
     if not stint_analysis.stints:
-        return PitRecommendationResponse(
-            session_id=session_id,
-            season=stint_analysis.season,
-            circuit_name=stint_analysis.circuit_name,
-            session_type=stint_analysis.session_type,
-            driver_code=driver_code,
-            pit_loss_seconds=pit_loss_seconds,
-            reasoning="No stint data available to calculate pit recommendation.",
-        )
+        return {
+            "crossover_lap": None,
+            "recommended_window_start": None,
+            "recommended_window_end": None,
+            "reasoning": "No stint data available.",
+            "fallback_used": False,
+        }
 
-    # Active/most recent stint
-    current_stint = stint_analysis.stints[-1]
-    curr_compound = current_stint.compound
-    d1 = current_stint.degradation_rate if current_stint.degradation_rate is not None else 0.06
-    b1 = current_stint.base_pace if current_stint.base_pace is not None else 90.0
+    last_stint = stint_analysis.stints[-1]
+    curr_compound = last_stint.compound
+    d1 = last_stint.degradation_rate if last_stint.degradation_rate is not None else 0.06
+    b1 = last_stint.base_pace if last_stint.base_pace is not None else 90.0
 
-    # Determine alternate compound
     if curr_compound in ("SOFT", "INTERMEDIATE", "WET"):
         alt_compound = "MEDIUM"
     elif curr_compound == "MEDIUM":
         alt_compound = "HARD"
-    else:  # HARD
+    else:
         alt_compound = "MEDIUM"
 
-    # Search historical team stints for alternate compound pace at this session
     alt_b: Optional[float] = None
     alt_d: Optional[float] = None
     fallback_used = False
@@ -301,11 +399,10 @@ def estimate_pit_window(
         alt_b = round(b1 + defaults["base_delta"], 3)
         alt_d = round(defaults["deg_rate"], 4)
 
-    start_lap = current_stint.laps[0].lap_number if current_stint.laps else 1
+    start_lap = last_stint.laps[0].lap_number if last_stint.laps else 1
     total_race_laps = min(total_laps, 70) if total_laps > 70 else total_laps
-    stint_laps_run = len(current_stint.laps) if current_stint.laps else 1
+    stint_laps_run = len(last_stint.laps) if last_stint.laps else 1
 
-    # Evaluate candidate pit laps L from max(start_lap + 3, start_lap + stint_laps_run) up to (total_race_laps - 3)
     min_pit_lap = max(start_lap + 3, start_lap + stint_laps_run)
     max_pit_lap = total_race_laps - 3
 
@@ -317,24 +414,19 @@ def estimate_pit_window(
             n_rem = total_race_laps - L
             if n_rem < 3:
                 continue
-
-            # Time to complete remaining laps if staying out on current tires
             stay_laps_k = np.arange(L + 1 - start_lap + 1, total_race_laps - start_lap + 2)
             time_stay = float(np.sum(b1 + d1 * stay_laps_k))
-
-            # Time to complete remaining laps if pitting at lap L for alt_compound
             alt_laps_m = np.arange(1, n_rem + 1)
             time_pit = pit_loss_seconds + float(np.sum(alt_b + alt_d * alt_laps_m))
-
             time_saved = time_stay - time_pit
             if time_saved > max_time_saved:
                 max_time_saved = time_saved
                 best_lap = L
 
     fallback_note = (
-        f" (Estimated using circuit compound fallback delta for {alt_compound})"
+        f" (estimated using baseline compound delta for {alt_compound})"
         if fallback_used
-        else f" (Derived from team stint data on {alt_compound})"
+        else f" (derived from team session data on {alt_compound})"
     )
 
     crossover_lap: Optional[int] = None
@@ -346,41 +438,26 @@ def estimate_pit_window(
         w_start = max(start_lap + 1, crossover_lap - 2)
         w_end = min(total_race_laps, crossover_lap + 2)
         reasoning_text = (
-            f"Phase 1 Cumulative Race Time Optimization: Current {curr_compound} stint # {current_stint.stint} exhibits "
-            f"a degradation rate of {d1:.4f} s/lap with estimated fresh base pace of {b1:.3f}s. "
-            f"Alternate compound {alt_compound} pace model is {alt_b:.3f}s base with {alt_d:.4f} s/lap degradation{fallback_note}. "
-            f"Accounting for circuit pit stop time loss of {pit_loss_seconds:.1f}s, pitting at Lap {crossover_lap} yields "
-            f"a net race time saving of +{max_time_saved:.2f}s over staying out. Recommended pit window: Laps {w_start}–{w_end}."
+            f"Phase 1 post-race analysis: {curr_compound} stint #{last_stint.stint} degradation {d1:.4f} s/lap, "
+            f"base pace {b1:.3f}s. {alt_compound} model: {alt_b:.3f}s base, {alt_d:.4f} s/lap{fallback_note}. "
+            f"Pit at Lap {crossover_lap} would have saved +{max_time_saved:.2f}s "
+            f"accounting for {pit_loss_seconds:.1f}s pit-lane loss. Indicative window: Laps {w_start}\u2013{w_end}."
         )
     else:
         net_loss_str = f"{abs(max_time_saved):.2f}s" if max_time_saved > -90000 else "significant"
         reasoning_text = (
-            f"Phase 1 Strategy Evaluation (Hold Position): Current {curr_compound} stint # {current_stint.stint} (degradation {d1:.4f} s/lap). "
-            f"With remaining race laps, pitting for alternate compound {alt_compound}{fallback_note} under green flag conditions "
-            f"would result in a net time loss of {net_loss_str} due to the {pit_loss_seconds:.1f}s pit stop loss constant. "
-            f"Recommendation: Hold position to race finish unless a VSC/Safety Car period occurs or tire degradation drastically accelerates."
+            f"Phase 1 post-race analysis: {curr_compound} stint #{last_stint.stint} (degradation {d1:.4f} s/lap). "
+            f"Switching to {alt_compound}{fallback_note} would have incurred a net time penalty of {net_loss_str} "
+            f"given the {pit_loss_seconds:.1f}s pit-lane loss constant."
         )
 
-    return PitRecommendationResponse(
-        session_id=session_id,
-        season=stint_analysis.season,
-        circuit_name=stint_analysis.circuit_name,
-        session_type=stint_analysis.session_type,
-        driver_code=driver_code,
-        current_stint=current_stint.stint,
-        current_compound=curr_compound,
-        current_degradation_rate=d1,
-        current_base_pace=b1,
-        alternate_compound=alt_compound,
-        alternate_degradation_rate=alt_d,
-        alternate_base_pace=alt_b,
-        pit_loss_seconds=pit_loss_seconds,
-        crossover_lap=crossover_lap,
-        recommended_window_start=w_start,
-        recommended_window_end=w_end,
-        reasoning=reasoning_text,
-        fallback_used=fallback_used,
-    )
+    return {
+        "crossover_lap": crossover_lap,
+        "recommended_window_start": w_start,
+        "recommended_window_end": w_end,
+        "reasoning": reasoning_text,
+        "fallback_used": fallback_used,
+    }
 
 
 def summarize_historical_cross_season(
@@ -467,11 +544,10 @@ def summarize_historical_cross_season(
 
 def compare_race_strategies(
     strategies: List[Any],
-    session_id: str,
-    circuit_name: str,
     season: int,
+    round_number: int,
+    circuit_name: str,
     pit_loss_seconds: float,
-    session_overview: Optional[SessionOverview] = None,
     historical_review: Optional[HistoricalStrategyReviewResponse] = None,
 ) -> StrategyComparisonResponse:
     """
@@ -485,34 +561,8 @@ def compare_race_strategies(
       - Falls back to default compound degradation model if no historical data exists.
     Read/compute endpoint — nothing is persisted.
     """
-    from app.schemas.strategy_engineer import StintEstimate, StrategyComparisonItem, StrategyComparisonResponse
-
-    # 1. Map actual session compound degradation rates if session data exists
+    # Map historical compound degradation rates (pre-race plans always use historical/fallback data)
     actual_comp_deg: Dict[str, Tuple[float, float]] = {}
-    if session_overview and session_overview.driver_lap_summaries:
-        temp_comp_degs: Dict[str, List[float]] = {}
-        temp_comp_bases: Dict[str, List[float]] = {}
-        session_info = {
-            "session_id": session_id,
-            "season": season,
-            "circuit_name": circuit_name,
-            "session_type": "Race",
-        }
-        for d_code, laps in session_overview.driver_lap_summaries.items():
-            an = calculate_tire_degradation_for_laps(laps, d_code, session_info)
-            for st in an.stints:
-                if st.degradation_rate is not None and st.base_pace is not None:
-                    c = st.compound.upper()
-                    if c not in temp_comp_degs:
-                        temp_comp_degs[c] = []
-                        temp_comp_bases[c] = []
-                    temp_comp_degs[c].append(st.degradation_rate)
-                    temp_comp_bases[c].append(st.base_pace)
-
-        for c, degs in temp_comp_degs.items():
-            actual_comp_deg[c] = (round(float(np.mean(degs)), 4), round(float(np.mean(temp_comp_bases[c])), 3))
-
-    # 2. Map historical compound degradation rates if historical review is provided
     hist_comp_deg: Dict[str, Tuple[float, float]] = {}
     if historical_review and historical_review.compound_summaries:
         for cs in historical_review.compound_summaries:
@@ -613,7 +663,7 @@ def compare_race_strategies(
                 total_projected_time_str=time_str,
                 stint_estimates=stint_estimates,
                 is_lowest_time=False,
-                estimation_label="Estimated — based on current degradation model, not a guarantee",
+                estimation_label="Phase 1 estimate — based on historical degradation model, not a guarantee",
             )
         )
 
@@ -625,11 +675,11 @@ def compare_race_strategies(
                 item.is_lowest_time = True
 
     return StrategyComparisonResponse(
-        session_id=session_id,
-        circuit_name=circuit_name,
         season=season,
+        round=round_number,
+        circuit_name=circuit_name,
         pit_loss_seconds=pit_loss_seconds,
         compared_strategies=compared_items,
-        disclaimer="Estimated — based on current degradation model, not a guarantee",
+        disclaimer="Phase 1 estimate — based on historical degradation model, not a guarantee",
     )
 
